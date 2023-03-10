@@ -1,0 +1,9 @@
+{
+  "name": "access/drupal_seamless_cilogon",
+  "type": "drupal-custom-module",
+  "description": "Support login across multiple domains.",
+  "keywords": ["Drupal"],
+  "license": "GPL-2.0-or-later",
+  "homepage": "https://github.com/access-ci-org/drupal_seamless_cilogon",
+  "minimum-stability": "dev"
+}

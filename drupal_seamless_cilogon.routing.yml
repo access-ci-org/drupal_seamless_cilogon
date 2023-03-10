@@ -1,0 +1,7 @@
+drupal_seamless_cilogon.drupal_seamless_cilogon_form:
+  path: '/admin/services/drupal_seamless_cilogon'
+  defaults:
+    _form: '\Drupal\drupal_seamless_cilogon\Form\DrupalSeamlessCilogon'
+    _title: 'Drupal Seamless CILogon configuration form'
+  requirements:
+    _role: 'administrator'

@@ -1,0 +1,5 @@
+services:
+  drupal_seamless_cilogon_event_subscriber:
+    class: '\Drupal\drupal_seamless_cilogon\EventSubscriber\DrupalSeamlessCilogonEventSubscriber'
+    tags:
+      - { name: 'event_subscriber' }

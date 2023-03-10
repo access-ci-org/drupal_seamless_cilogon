@@ -1,0 +1,5 @@
+drupal_seamless_cilogon.drupal_seamless_cilogon_form:
+  title: 'Seamless CILogon settings'
+  description: 'Configure seamless CILogon settings'
+  route_name: drupal_seamless_cilogon.drupal_seamless_cilogon_form
+  parent: 'system.admin_config_services'
