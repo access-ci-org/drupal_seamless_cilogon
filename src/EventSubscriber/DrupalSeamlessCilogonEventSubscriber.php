@@ -85,7 +85,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       if (
         !$cookie_exists &&
         $route_name !== 'user.logout' &&
-        $route_name !== 'user.login'
+        $route_name !== 'user.login' &&
+        $route_name !== 'user.logout.confirm'
       ) {
         $destination = "/user/logout/";
         $redir = new TrustedRedirectResponse($destination, '302');
