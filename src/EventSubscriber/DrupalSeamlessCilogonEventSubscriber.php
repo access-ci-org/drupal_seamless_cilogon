@@ -163,9 +163,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     setcookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
     unset($_COOKIE[$cookie_name]);
 
-    // User Logout.
-    user_logout();
-
     $destination = 'https://cilogon.org/logout/?skin=access';
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
