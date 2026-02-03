@@ -40,9 +40,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       return;
     }
 
-    // Don't attempt to redirect if the cilogon_auth module is not installed.
+    // Don't attempt to redirect if neither cilogon module is installed.
     $moduleHandler = \Drupal::service('module_handler');
-    if (!$moduleHandler->moduleExists('cilogon_auth')) {
+    if (!$moduleHandler->moduleExists('cilogon_auth') && !$moduleHandler->moduleExists('openid_connect_cilogon_client')) {
       return;
     }
 
@@ -63,7 +63,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     }
 
     // If coming back from cilogon, set the cookie.
-    if ($route_name === 'cilogon_auth.redirect_controller_redirect') {
+    // Support both old cilogon_auth and new openid_connect routes
+    if ($route_name === 'cilogon_auth.redirect_controller_redirect' || 
+        $route_name === 'openid_connect.redirect_controller_redirect') {
       if (!$cookie_exists) {
         $this->doSetCookie($event, $seamless_debug, $cookie_name);
       }
@@ -193,30 +195,60 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
     // Setup redirect to CILogon flow.
-    // @todo move some of the following to a constructor for this class?
     $container = \Drupal::getContainer();
     $client_name = 'cilogon';
-    $config_name = 'cilogon_auth.settings.' . $client_name;
-    $configuration = $container->get('config.factory')->get($config_name)->get('settings');
-    $pluginManager = $container->get('plugin.manager.cilogon_auth_client.processor');
-    $claims = $container->get('cilogon_auth.claims');
-    $client = $pluginManager->createInstance($client_name, $configuration);
-    $scopes = $claims->getScopes();
-    $destination = $request->getRequestUri();
-    $query = NULL;
-    if (NULL !== \Drupal::request()->query->get('redirect')) {
-      $query = Xss::filter(\Drupal::request()->query->get('redirect'));
+    
+    // Try openid_connect first, fallback to cilogon_auth
+    $moduleHandler = \Drupal::service('module_handler');
+    $using_openid_connect = $moduleHandler->moduleExists('openid_connect_cilogon_client');
+    
+    if ($using_openid_connect) {
+      // Use openid_connect
+      $config_name = 'openid_connect.settings.' . $client_name;
+      $configuration = $container->get('config.factory')->get($config_name)->get('settings');
+      $pluginManager = $container->get('plugin.manager.openid_connect_client');
+      $client = $pluginManager->createInstance($client_name, $configuration);
+      
+      // Set destination in session for openid_connect
+      $destination = $request->getRequestUri();
+      $query = NULL;
+      if (NULL !== \Drupal::request()->query->get('redirect')) {
+        $query = Xss::filter(\Drupal::request()->query->get('redirect'));
+      }
+      
+      $_SESSION['openid_connect_op'] = 'login';
+      $_SESSION['openid_connect_destination'] = [$destination, ['query' => $query]];
+      
+      // Get scopes from client
+      $scopes = implode(' ', $client->getClientScopes());
+      $response = $client->authorize($scopes);
     }
-    $_SESSION['cilogon_auth_op'] = 'login';
-    $_SESSION['cilogon_auth_destination'] = [$destination, ['query' => $query]];
-
-    $response = $client->authorize($scopes);
+    else {
+      // Fallback to cilogon_auth (legacy)
+      $config_name = 'cilogon_auth.settings.' . $client_name;
+      $configuration = $container->get('config.factory')->get($config_name)->get('settings');
+      $pluginManager = $container->get('plugin.manager.cilogon_auth_client.processor');
+      $claims = $container->get('cilogon_auth.claims');
+      $client = $pluginManager->createInstance($client_name, $configuration);
+      $scopes = $claims->getScopes();
+      
+      $destination = $request->getRequestUri();
+      $query = NULL;
+      if (NULL !== \Drupal::request()->query->get('redirect')) {
+        $query = Xss::filter(\Drupal::request()->query->get('redirect'));
+      }
+      
+      $_SESSION['cilogon_auth_op'] = 'login';
+      $_SESSION['cilogon_auth_destination'] = [$destination, ['query' => $query]];
+      
+      $response = $client->authorize($scopes);
+    }
+    
     $response->headers->set('Cache-Control', 'public, max-age=0');
-
     $event->setResponse($response);
 
     if ($seamless_debug) {
-      $msg = __FUNCTION__ . "() - destination = $destination ---- "
+      $msg = __FUNCTION__ . "() - destination = " . ($destination ?? '') . " using " . ($using_openid_connect ? 'openid_connect' : 'cilogon_auth')
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
       \Drupal::messenger()->addStatus($msg);
     }
