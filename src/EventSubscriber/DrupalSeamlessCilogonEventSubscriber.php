@@ -52,12 +52,18 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $cookie_name = self::SEAMLESSCOOKIENAME;
     $cookie_exists = NULL !== \Drupal::service('request_stack')->getCurrentRequest()->cookies->get($cookie_name);
     $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
+    
+    // Check if we just set the cookie in the session (it won't be in the request yet)
+    $request = \Drupal::request();
+    $session = $request->getSession();
+    $cookie_just_set = $session->get('seamless_cilogon_cookie_was_set', FALSE);
 
     if ($seamless_debug) {
       $msg = __FUNCTION__ . "() ------- route_name = $route_name"
         . ", user_is_authenticated = " . ($user_is_authenticated ? "TRUE" : "FALSE")
         . ", \$_COOKIE[$cookie_name] "
         . ($cookie_exists ? ('*exists* (with value ' . print_r($_COOKIE[$cookie_name], TRUE) . ')') : ' <not set>')
+        . ", cookie_just_set = " . ($cookie_just_set ? "TRUE" : "FALSE")
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
       \Drupal::messenger()->addStatus($msg);
       error_log('seamless: ' . $msg);
@@ -95,8 +101,10 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // unless cookie doesn't exist, in which case, logout.
     if ($user_is_authenticated) {
       // Unless cookie doesn't exist. In this case, logout.
+      // BUT: Don't logout if we just set the cookie (it won't be in the request yet)
       if (
         !$cookie_exists &&
+        !$cookie_just_set &&
         $route_name !== 'user.logout' &&
         $route_name !== 'user.login' &&
         $route_name !== 'user.logout.confirm'
@@ -111,6 +119,12 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
         $redir->addCacheableDependency($destination);
         $event->setResponse($redir);
       }
+      
+      // Clear the "just set" flag if cookie now exists
+      if ($cookie_exists && $cookie_just_set) {
+        $session->remove('seamless_cilogon_cookie_was_set');
+      }
+      
       return;
     }
 
@@ -149,6 +163,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       
       $response = $event->getResponse();
       $response->headers->setCookie($cookie);
+      
+      // Mark that we just set the cookie so we don't logout on next request
+      $session->set('seamless_cilogon_cookie_was_set', TRUE);
       
       $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
       if ($seamless_debug) {
