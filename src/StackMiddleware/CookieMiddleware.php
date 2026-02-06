@@ -82,16 +82,16 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    // Don't attempt to redirect if the cilogon_auth module is not installed.
+    // Don't attempt to redirect if neither cilogon module is installed.
     $moduleHandler = \Drupal::service('module_handler');
-    if (!$moduleHandler->moduleExists('cilogon_auth')) {
+    if (!$moduleHandler->moduleExists('cilogon_auth') && !$moduleHandler->moduleExists('openid_connect_cilogon_client')) {
       if ($logging) {
-        $this->logger->notice('module exists cilogon_auth');
+        $this->logger->notice('module exists cilogon_auth or openid_connect_cilogon_client');
       }
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    $user_is_authenticated = isset($_SERVER['HTTP_COOKIE']) ? TRUE : FALSE;
+    $user_is_authenticated = \Drupal::currentUser()->isAuthenticated();
     $path = $request->getRequestUri();
     $arg = explode('/', $path);
     $cookie_name = isset($_COOKIE['SESSaccesscisso']) ? $_COOKIE['SESSaccesscisso'] : NULL;
@@ -105,9 +105,10 @@ class CookieMiddleware implements HttpKernelInterface {
     }
 
     // If coming back from cilogon, set the cookie.
-    if ($arg[1] === 'cilogon-auth') {
+    // Support both old cilogon_auth and new openid_connect routes
+    if ($arg[1] === 'cilogon-auth' || $arg[1] === 'openid-connect') {
       if ($logging) {
-        $this->logger->notice('path: /cilogin-auth');
+        $this->logger->notice('path: /cilogon-auth or /openid-connect');
       }
       return $this->httpKernel->handle($request, $type, $catch);
     }
@@ -121,18 +122,9 @@ class CookieMiddleware implements HttpKernelInterface {
     }
 
     // If the user is authenticated, no need to redirect to CILogon, unless cookie doesn't exist, in
-    // which case, logout.
+    // which case, let the EventSubscriber handle the logout.
     if ($user_is_authenticated) {
-      // Unless cookie doesn't exist. In this case, logout.
-      if (
-        !$cookie_exists &&
-        str_starts_with($arg[1], 'user')
-      ) {
-        if ($logging) {
-          $this->logger->notice('redirect /user/logout');
-        }
-        return new RedirectResponse($request->getBasePath() . "/user/logout", 302, ['Cache-Control' => 'no-cache']);
-      }
+      // The EventSubscriber will handle logout if cookie is missing
       return $this->httpKernel->handle($request, $type, $catch);
     }
 

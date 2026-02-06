@@ -90,7 +90,11 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
         $route_name !== 'user.login' &&
         $route_name !== 'user.logout.confirm'
       ) {
-        $destination = "/user/logout/";
+        // Programmatically log out the user instead of redirecting to logout URL
+        user_logout();
+        
+        // Redirect to CILogon logout
+        $destination = 'https://cilogon.org/logout/?skin=access';
         $redir = new TrustedRedirectResponse($destination, '302');
         $redir->headers->set('Cache-Control', 'public, max-age=0');
         $redir->addCacheableDependency($destination);
