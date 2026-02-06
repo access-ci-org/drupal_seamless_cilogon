@@ -8,6 +8,7 @@ use Drupal\Core\Routing\TrustedRedirectResponse;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
+use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
@@ -62,24 +63,18 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       error_log('seamless: ' . $msg);
     }
 
-    // If coming back from cilogon, set the cookie.
+    // If coming back from cilogon, mark that we need to set the cookie.
     // Support both old cilogon_auth and new openid_connect routes
     if ($route_name === 'cilogon_auth.redirect_controller_redirect' || 
         $route_name === 'openid_connect.redirect_controller_redirect') {
       if (!$cookie_exists) {
-        // Set the cookie directly without redirecting to avoid losing query parameters
-        $site_name = \Drupal::config('system.site')->get('name');
-        $cookie_value = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
-        $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
-        $cookie_expiration = strtotime($cookie_expiration);
-        $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
-        
-        // Set cookie using setcookie() and let the request continue
-        setcookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
+        // Store in session that we need to set the cookie on the response
+        $request = \Drupal::request();
+        $session = $request->getSession();
+        $session->set('seamless_cilogon_set_cookie', TRUE);
         
         if ($seamless_debug) {
-          $msg = __FUNCTION__ . "() - Set cookie on callback route: name = $cookie_name, value = $cookie_value, expiration = " 
-            . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
+          $msg = __FUNCTION__ . "() - Marked to set cookie on callback route"
             . ' -- ' . basename(__FILE__) . ':' . __LINE__;
           \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
         }
@@ -122,6 +117,46 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // If here -- user is anonymous.  If cookie exists, redirect to cilogon.
     if ($cookie_exists) {
       $this->doRedirectToCilogon($event, $seamless_debug);
+    }
+  }
+
+  /**
+   * Set cookie on response if marked during request.
+   *
+   * @param \Symfony\Component\HttpKernel\Event\ResponseEvent $event
+   *   Response event.
+   */
+  public function onResponse(ResponseEvent $event) {
+    if (!$event->isMainRequest()) {
+      return;
+    }
+
+    $request = $event->getRequest();
+    $session = $request->getSession();
+    
+    // Check if we need to set the cookie
+    if ($session->get('seamless_cilogon_set_cookie')) {
+      $session->remove('seamless_cilogon_set_cookie');
+      
+      $cookie_name = self::SEAMLESSCOOKIENAME;
+      $site_name = \Drupal::config('system.site')->get('name');
+      $cookie_value = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
+      $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
+      $cookie_expiration = strtotime($cookie_expiration);
+      $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+      
+      $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
+      
+      $response = $event->getResponse();
+      $response->headers->setCookie($cookie);
+      
+      $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
+      if ($seamless_debug) {
+        $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = " 
+          . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
+          . ' -- ' . basename(__FILE__) . ':' . __LINE__;
+        \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
+      }
     }
   }
 
@@ -305,7 +340,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   }
 
   /**
-   * Subscribe to onRequest events.
+   * Subscribe to onRequest and onResponse events.
    *
    * Check if a CILogon redirect is needed any time a page is requested.
    *
@@ -313,6 +348,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    */
   public static function getSubscribedEvents() {
     $events[KernelEvents::REQUEST][] = ['onRequest', 31];
+    $events[KernelEvents::RESPONSE][] = ['onResponse', -10];
     return $events;
   }
 
