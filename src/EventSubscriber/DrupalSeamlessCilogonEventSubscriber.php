@@ -211,13 +211,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       
       // Set destination in session for openid_connect
       $destination = $request->getRequestUri();
-      $query = NULL;
-      if (NULL !== \Drupal::request()->query->get('redirect')) {
-        $query = Xss::filter(\Drupal::request()->query->get('redirect'));
-      }
       
       $_SESSION['openid_connect_op'] = 'login';
-      $_SESSION['openid_connect_destination'] = [$destination, ['query' => $query]];
+      $_SESSION['openid_connect_destination'] = $destination;
       
       // Get scopes from client
       $scopes = implode(' ', $client->getClientScopes());
@@ -233,13 +229,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $scopes = $claims->getScopes();
       
       $destination = $request->getRequestUri();
-      $query = NULL;
-      if (NULL !== \Drupal::request()->query->get('redirect')) {
-        $query = Xss::filter(\Drupal::request()->query->get('redirect'));
-      }
       
       $_SESSION['cilogon_auth_op'] = 'login';
-      $_SESSION['cilogon_auth_destination'] = [$destination, ['query' => $query]];
+      $_SESSION['cilogon_auth_destination'] = $destination;
       
       $response = $client->authorize($scopes);
     }
