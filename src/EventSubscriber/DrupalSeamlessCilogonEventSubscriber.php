@@ -67,8 +67,24 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     if ($route_name === 'cilogon_auth.redirect_controller_redirect' || 
         $route_name === 'openid_connect.redirect_controller_redirect') {
       if (!$cookie_exists) {
-        $this->doSetCookie($event, $seamless_debug, $cookie_name);
+        // Set the cookie directly without redirecting to avoid losing query parameters
+        $site_name = \Drupal::config('system.site')->get('name');
+        $cookie_value = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
+        $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
+        $cookie_expiration = strtotime($cookie_expiration);
+        $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+        
+        // Set cookie using setcookie() and let the request continue
+        setcookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
+        
+        if ($seamless_debug) {
+          $msg = __FUNCTION__ . "() - Set cookie on callback route: name = $cookie_name, value = $cookie_value, expiration = " 
+            . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
+            . ' -- ' . basename(__FILE__) . ':' . __LINE__;
+          \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
+        }
       }
+      // Let the request continue to process the callback
       return;
     }
 
