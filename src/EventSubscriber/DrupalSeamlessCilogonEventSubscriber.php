@@ -59,14 +59,15 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $cookie_just_set = $session->get('seamless_cilogon_cookie_was_set', FALSE);
 
     if ($seamless_debug) {
+      $cookie_value_safe = $cookie_exists ? Html::escape($_COOKIE[$cookie_name]) : '<not set>';
       $msg = __FUNCTION__ . "() ------- route_name = $route_name"
         . ", user_is_authenticated = " . ($user_is_authenticated ? "TRUE" : "FALSE")
-        . ", \$_COOKIE[$cookie_name] "
-        . ($cookie_exists ? ('*exists* (with value ' . print_r($_COOKIE[$cookie_name], TRUE) . ')') : ' <not set>')
+        . ", cookie exists = " . ($cookie_exists ? "TRUE (value: $cookie_value_safe)" : "FALSE")
         . ", cookie_just_set = " . ($cookie_just_set ? "TRUE" : "FALSE")
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      \Drupal::messenger()->addStatus($msg);
+      // Only log to watchdog, don't show to user (XSS risk)
       error_log('seamless: ' . $msg);
+      \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
     }
 
     // If coming back from cilogon, mark that we need to set the cookie.

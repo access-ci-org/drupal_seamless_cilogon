@@ -133,8 +133,15 @@ class CookieMiddleware implements HttpKernelInterface {
       if ($logging) {
         $this->logger->notice('redirect /user?redirect=path');
       }
+      // Sanitize the request URI to prevent open redirects
       $from = $request->getRequestUri();
-      return new RedirectResponse($request->getBasePath() . "/user?redirect=$from", 302, ['Cache-Control' => 'no-cache']);
+      // Ensure it's a relative path (starts with /)
+      if (!str_starts_with($from, '/')) {
+        $from = '/';
+      }
+      // URL encode the path to prevent injection
+      $from_encoded = urlencode($from);
+      return new RedirectResponse($request->getBasePath() . "/user?redirect=$from_encoded", 302, ['Cache-Control' => 'no-cache']);
     }
 
     return $this->httpKernel->handle($request, $type, $catch);
