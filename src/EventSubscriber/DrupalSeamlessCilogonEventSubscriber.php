@@ -90,11 +90,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       return;
     }
 
-    // If logging out, delete the cookie.
+    // If logging out, delete the cookie and redirect to CILogon logout.
     if ($route_name === 'user.logout') {
-      if ($cookie_exists) {
-        $this->doDeleteCookie($event, $seamless_debug, $cookie_name);
-      }
+      $this->doDeleteCookie($event, $seamless_debug, $cookie_name, $cookie_exists);
       return;
     }
 
@@ -223,37 +221,48 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   }
 
   /**
-   * Delete the cookie, then redirect to user.logout.
+   * Delete the cookie, then redirect to CILogon logout.
+   *
+   * Always redirects to CILogon logout to clear CILogon's session,
+   * even if the seamless cookie doesn't exist (e.g. expired).
    *
    * @param \Symfony\Component\HttpKernel\Event\RequestEvent $event
-   *   Response event.   *.
+   *   Request event.
+   * @param bool $seamless_debug
+   *   Whether debug mode is enabled.
+   * @param string $cookie_name
+   *   The cookie name to delete.
+   * @param bool $cookie_exists
+   *   Whether the cookie currently exists in the request.
    */
-  protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name) {
+  protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name, $cookie_exists = TRUE) {
 
-    $cookie_value = '';
-    $cookie_expiration = strtotime('-1 hour');
     $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
-
-    // Set cookie in the past and then remove it.
-    setcookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
-    unset($_COOKIE[$cookie_name]);
 
     user_logout();
 
     $destination = 'https://cilogon.org/logout/?skin=access';
 
-    // \Drupal::service('page_cache_kill_switch')->trigger();
     $redir = new TrustedRedirectResponse($destination, '302');
     $redir->headers->set('Cache-Control', 'public, max-age=0');
     $redir->addCacheableDependency($destination);
 
+    // Use Symfony Cookie on the response headers for reliable deletion.
+    if ($cookie_exists) {
+      $expireCookie = new Cookie($cookie_name, '', strtotime('-1 hour'), '/', $cookie_domain);
+      $redir->headers->setCookie($expireCookie);
+      unset($_COOKIE[$cookie_name]);
+    }
+
     $event->setResponse($redir);
 
     if ($seamless_debug) {
-      $msg = __FUNCTION__ . "() - destination = $destination ---- unset cookie"
+      $msg = __FUNCTION__ . "() - destination = $destination"
+        . ", cookie_exists = " . ($cookie_exists ? "TRUE" : "FALSE")
+        . " ---- unset cookie"
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      \Drupal::messenger()->addStatus($msg);
       error_log('seamless: ' . $msg);
+      \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
     }
   }
 
@@ -282,11 +291,19 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $pluginManager = $container->get('plugin.manager.openid_connect_client');
       $client = $pluginManager->createInstance($client_name, $configuration);
       
-      // Set destination in session for openid_connect
-      $destination = $request->getRequestUri();
-      
+      // Set destination in session for openid_connect.
+      // Must use array format: [$path, ['query' => $queryString]]
+      // to match OpenIDConnectSession::saveDestination().
+      $path = $request->getPathInfo();
+      $query = $request->getQueryString();
+
       $_SESSION['openid_connect_op'] = 'login';
-      $_SESSION['openid_connect_destination'] = $destination;
+      $_SESSION['openid_connect_destination'] = [
+        $path,
+        [
+          'query' => $query,
+        ],
+      ];
       
       // Get scopes from client
       $scopes = implode(' ', $client->getClientScopes());
@@ -313,9 +330,11 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $event->setResponse($response);
 
     if ($seamless_debug) {
-      $msg = __FUNCTION__ . "() - destination = " . ($destination ?? '') . " using " . ($using_openid_connect ? 'openid_connect' : 'cilogon_auth')
+      $dest_str = $using_openid_connect ? ($path ?? '') : ($destination ?? '');
+      $msg = __FUNCTION__ . "() - destination = " . $dest_str . " using " . ($using_openid_connect ? 'openid_connect' : 'cilogon_auth')
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      \Drupal::messenger()->addStatus($msg);
+      error_log('seamless: ' . $msg);
+      \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
     }
   }
 
