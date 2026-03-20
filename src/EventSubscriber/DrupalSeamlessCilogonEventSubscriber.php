@@ -75,6 +75,17 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       if ($cookie_exists) {
         $this->doDeleteCookie($event, $seamless_debug, $cookie_name);
       }
+      else {
+        // Cookie already gone (expired or cleared) but user is still
+        // authenticated via Drupal session. Logout and redirect to CILogon
+        // to avoid getting stuck on the logout confirmation form.
+        user_logout();
+        $destination = 'https://cilogon.org/logout/?skin=access';
+        $redir = new TrustedRedirectResponse($destination, '302');
+        $redir->headers->set('Cache-Control', 'public, max-age=0');
+        $redir->addCacheableDependency($destination);
+        $event->setResponse($redir);
+      }
       return;
     }
 
