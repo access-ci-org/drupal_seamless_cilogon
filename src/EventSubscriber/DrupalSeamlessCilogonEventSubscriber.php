@@ -75,11 +75,12 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     if ($route_name === 'cilogon_auth.redirect_controller_redirect' || 
         $route_name === 'openid_connect.redirect_controller_redirect') {
       if (!$cookie_exists) {
-        // Store in session that we need to set the cookie on the response
+        // Store on request attributes (not session) because
+        // user_login_finalize() regenerates the session, which would
+        // wipe a session-based flag before onResponse() can read it.
         $request = \Drupal::request();
-        $session = $request->getSession();
-        $session->set('seamless_cilogon_set_cookie', TRUE);
-        
+        $request->attributes->set('seamless_cilogon_set_cookie', TRUE);
+
         if ($seamless_debug) {
           $msg = __FUNCTION__ . "() - Marked to set cookie on callback route"
             . ' -- ' . basename(__FILE__) . ':' . __LINE__;
@@ -145,11 +146,11 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     }
 
     $request = $event->getRequest();
-    $session = $request->getSession();
-    
-    // Check if we need to set the cookie
-    if ($session->get('seamless_cilogon_set_cookie')) {
-      $session->remove('seamless_cilogon_set_cookie');
+
+    // Check if we need to set the cookie (flag set on request attributes
+    // in onRequest, which survives session regeneration during login)
+    if ($request->attributes->get('seamless_cilogon_set_cookie')) {
+      $request->attributes->remove('seamless_cilogon_set_cookie');
       
       $cookie_name = self::SEAMLESSCOOKIENAME;
       $site_name = \Drupal::config('system.site')->get('name');
@@ -164,8 +165,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $response->headers->setCookie($cookie);
       
       // Mark that we just set the cookie so we don't logout on next request
-      $session->set('seamless_cilogon_cookie_was_set', TRUE);
-      
+      $request->getSession()->set('seamless_cilogon_cookie_was_set', TRUE);
+
       $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
       if ($seamless_debug) {
         $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = " 
