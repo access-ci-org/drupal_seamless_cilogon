@@ -8,6 +8,7 @@ use Drupal\Core\Routing\TrustedRedirectResponse;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
+use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
@@ -40,9 +41,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       return;
     }
 
-    // Don't attempt to redirect if the cilogon_auth module is not installed.
+    // Don't attempt to redirect if neither cilogon module is installed.
     $moduleHandler = \Drupal::service('module_handler');
-    if (!$moduleHandler->moduleExists('cilogon_auth')) {
+    if (!$moduleHandler->moduleExists('cilogon_auth') && !$moduleHandler->moduleExists('openid_connect_cilogon_client')) {
       return;
     }
 
@@ -51,41 +52,48 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $cookie_name = self::SEAMLESSCOOKIENAME;
     $cookie_exists = NULL !== \Drupal::service('request_stack')->getCurrentRequest()->cookies->get($cookie_name);
     $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
+    
+    // Check if we just set the cookie in the session (it won't be in the request yet)
+    $request = \Drupal::request();
+    $session = $request->getSession();
+    $cookie_just_set = $session->get('seamless_cilogon_cookie_was_set', FALSE);
 
     if ($seamless_debug) {
+      $cookie_value_safe = $cookie_exists ? Html::escape($_COOKIE[$cookie_name]) : '<not set>';
       $msg = __FUNCTION__ . "() ------- route_name = $route_name"
         . ", user_is_authenticated = " . ($user_is_authenticated ? "TRUE" : "FALSE")
-        . ", \$_COOKIE[$cookie_name] "
-        . ($cookie_exists ? ('*exists* (with value ' . print_r($_COOKIE[$cookie_name], TRUE) . ')') : ' <not set>')
+        . ", cookie exists = " . ($cookie_exists ? "TRUE (value: $cookie_value_safe)" : "FALSE")
+        . ", cookie_just_set = " . ($cookie_just_set ? "TRUE" : "FALSE")
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      \Drupal::messenger()->addStatus($msg);
+      // Only log to watchdog, don't show to user (XSS risk)
       error_log('seamless: ' . $msg);
+      \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
     }
 
-    // If coming back from cilogon, set the cookie.
-    if ($route_name === 'cilogon_auth.redirect_controller_redirect') {
+    // If coming back from cilogon, mark that we need to set the cookie.
+    // Support both old cilogon_auth and new openid_connect routes
+    if ($route_name === 'cilogon_auth.redirect_controller_redirect' || 
+        $route_name === 'openid_connect.redirect_controller_redirect') {
       if (!$cookie_exists) {
-        $this->doSetCookie($event, $seamless_debug, $cookie_name);
+        // Store on request attributes (not session) because
+        // user_login_finalize() regenerates the session, which would
+        // wipe a session-based flag before onResponse() can read it.
+        $request = \Drupal::request();
+        $request->attributes->set('seamless_cilogon_set_cookie', TRUE);
+
+        if ($seamless_debug) {
+          $msg = __FUNCTION__ . "() - Marked to set cookie on callback route"
+            . ' -- ' . basename(__FILE__) . ':' . __LINE__;
+          \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
+        }
       }
+      // Let the request continue to process the callback
       return;
     }
 
-    // If logging out, delete the cookie.
+    // If logging out, delete the cookie and redirect to CILogon logout.
     if ($route_name === 'user.logout') {
-      if ($cookie_exists) {
-        $this->doDeleteCookie($event, $seamless_debug, $cookie_name);
-      }
-      else {
-        // Cookie already gone (expired or cleared) but user is still
-        // authenticated via Drupal session. Logout and redirect to CILogon
-        // to avoid getting stuck on the logout confirmation form.
-        user_logout();
-        $destination = 'https://cilogon.org/logout/?skin=access';
-        $redir = new TrustedRedirectResponse($destination, '302');
-        $redir->headers->set('Cache-Control', 'public, max-age=0');
-        $redir->addCacheableDependency($destination);
-        $event->setResponse($redir);
-      }
+      $this->doDeleteCookie($event, $seamless_debug, $cookie_name, $cookie_exists);
       return;
     }
 
@@ -93,24 +101,79 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // unless cookie doesn't exist, in which case, logout.
     if ($user_is_authenticated) {
       // Unless cookie doesn't exist. In this case, logout.
+      // BUT: Don't logout if we just set the cookie (it won't be in the request yet)
       if (
         !$cookie_exists &&
+        !$cookie_just_set &&
         $route_name !== 'user.logout' &&
         $route_name !== 'user.login' &&
         $route_name !== 'user.logout.confirm'
       ) {
-        $destination = "/user/logout/";
+        // Programmatically log out the user instead of redirecting to logout URL
+        user_logout();
+        
+        // Redirect to CILogon logout
+        $destination = 'https://cilogon.org/logout/?skin=access';
         $redir = new TrustedRedirectResponse($destination, '302');
         $redir->headers->set('Cache-Control', 'public, max-age=0');
         $redir->addCacheableDependency($destination);
         $event->setResponse($redir);
       }
+      
+      // Clear the "just set" flag if cookie now exists
+      if ($cookie_exists && $cookie_just_set) {
+        $session->remove('seamless_cilogon_cookie_was_set');
+      }
+      
       return;
     }
 
     // If here -- user is anonymous.  If cookie exists, redirect to cilogon.
     if ($cookie_exists) {
       $this->doRedirectToCilogon($event, $seamless_debug);
+    }
+  }
+
+  /**
+   * Set cookie on response if marked during request.
+   *
+   * @param \Symfony\Component\HttpKernel\Event\ResponseEvent $event
+   *   Response event.
+   */
+  public function onResponse(ResponseEvent $event) {
+    if (!$event->isMainRequest()) {
+      return;
+    }
+
+    $request = $event->getRequest();
+
+    // Check if we need to set the cookie (flag set on request attributes
+    // in onRequest, which survives session regeneration during login)
+    if ($request->attributes->get('seamless_cilogon_set_cookie')) {
+      $request->attributes->remove('seamless_cilogon_set_cookie');
+      
+      $cookie_name = self::SEAMLESSCOOKIENAME;
+      $site_name = \Drupal::config('system.site')->get('name');
+      $cookie_value = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
+      $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
+      $cookie_expiration = strtotime($cookie_expiration);
+      $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+      
+      $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
+      
+      $response = $event->getResponse();
+      $response->headers->setCookie($cookie);
+      
+      // Mark that we just set the cookie so we don't logout on next request
+      $request->getSession()->set('seamless_cilogon_cookie_was_set', TRUE);
+
+      $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
+      if ($seamless_debug) {
+        $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = " 
+          . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
+          . ' -- ' . basename(__FILE__) . ':' . __LINE__;
+        \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
+      }
     }
   }
 
@@ -159,37 +222,48 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   }
 
   /**
-   * Delete the cookie, then redirect to user.logout.
+   * Delete the cookie, then redirect to CILogon logout.
+   *
+   * Always redirects to CILogon logout to clear CILogon's session,
+   * even if the seamless cookie doesn't exist (e.g. expired).
    *
    * @param \Symfony\Component\HttpKernel\Event\RequestEvent $event
-   *   Response event.   *.
+   *   Request event.
+   * @param bool $seamless_debug
+   *   Whether debug mode is enabled.
+   * @param string $cookie_name
+   *   The cookie name to delete.
+   * @param bool $cookie_exists
+   *   Whether the cookie currently exists in the request.
    */
-  protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name) {
+  protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name, $cookie_exists = TRUE) {
 
-    $cookie_value = '';
-    $cookie_expiration = strtotime('-1 hour');
     $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
-
-    // Set cookie in the past and then remove it.
-    setcookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
-    unset($_COOKIE[$cookie_name]);
 
     user_logout();
 
     $destination = 'https://cilogon.org/logout/?skin=access';
 
-    // \Drupal::service('page_cache_kill_switch')->trigger();
     $redir = new TrustedRedirectResponse($destination, '302');
     $redir->headers->set('Cache-Control', 'public, max-age=0');
     $redir->addCacheableDependency($destination);
 
+    // Use Symfony Cookie on the response headers for reliable deletion.
+    if ($cookie_exists) {
+      $expireCookie = new Cookie($cookie_name, '', strtotime('-1 hour'), '/', $cookie_domain);
+      $redir->headers->setCookie($expireCookie);
+      unset($_COOKIE[$cookie_name]);
+    }
+
     $event->setResponse($redir);
 
     if ($seamless_debug) {
-      $msg = __FUNCTION__ . "() - destination = $destination ---- unset cookie"
+      $msg = __FUNCTION__ . "() - destination = $destination"
+        . ", cookie_exists = " . ($cookie_exists ? "TRUE" : "FALSE")
+        . " ---- unset cookie"
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      \Drupal::messenger()->addStatus($msg);
       error_log('seamless: ' . $msg);
+      \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
     }
   }
 
@@ -204,32 +278,64 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
     // Setup redirect to CILogon flow.
-    // @todo move some of the following to a constructor for this class?
     $container = \Drupal::getContainer();
     $client_name = 'cilogon';
-    $config_name = 'cilogon_auth.settings.' . $client_name;
-    $configuration = $container->get('config.factory')->get($config_name)->get('settings');
-    $pluginManager = $container->get('plugin.manager.cilogon_auth_client.processor');
-    $claims = $container->get('cilogon_auth.claims');
-    $client = $pluginManager->createInstance($client_name, $configuration);
-    $scopes = $claims->getScopes();
-    $destination = $request->getRequestUri();
-    $query = NULL;
-    if (NULL !== \Drupal::request()->query->get('redirect')) {
-      $query = Xss::filter(\Drupal::request()->query->get('redirect'));
+    
+    // Try openid_connect first, fallback to cilogon_auth
+    $moduleHandler = \Drupal::service('module_handler');
+    $using_openid_connect = $moduleHandler->moduleExists('openid_connect_cilogon_client');
+    
+    if ($using_openid_connect) {
+      // Use openid_connect
+      $config_name = 'openid_connect.settings.' . $client_name;
+      $configuration = $container->get('config.factory')->get($config_name)->get('settings');
+      $pluginManager = $container->get('plugin.manager.openid_connect_client');
+      $client = $pluginManager->createInstance($client_name, $configuration);
+      
+      // Set destination in session for openid_connect.
+      // Must use array format: [$path, ['query' => $queryString]]
+      // to match OpenIDConnectSession::saveDestination().
+      $path = $request->getPathInfo();
+      $query = $request->getQueryString();
+
+      $_SESSION['openid_connect_op'] = 'login';
+      $_SESSION['openid_connect_destination'] = [
+        $path,
+        [
+          'query' => $query,
+        ],
+      ];
+      
+      // Get scopes from client
+      $scopes = implode(' ', $client->getClientScopes());
+      $response = $client->authorize($scopes);
     }
-    $_SESSION['cilogon_auth_op'] = 'login';
-    $_SESSION['cilogon_auth_destination'] = [$destination, ['query' => $query]];
-
-    $response = $client->authorize($scopes);
+    else {
+      // Fallback to cilogon_auth (legacy)
+      $config_name = 'cilogon_auth.settings.' . $client_name;
+      $configuration = $container->get('config.factory')->get($config_name)->get('settings');
+      $pluginManager = $container->get('plugin.manager.cilogon_auth_client.processor');
+      $claims = $container->get('cilogon_auth.claims');
+      $client = $pluginManager->createInstance($client_name, $configuration);
+      $scopes = $claims->getScopes();
+      
+      $destination = $request->getRequestUri();
+      
+      $_SESSION['cilogon_auth_op'] = 'login';
+      $_SESSION['cilogon_auth_destination'] = $destination;
+      
+      $response = $client->authorize($scopes);
+    }
+    
     $response->headers->set('Cache-Control', 'public, max-age=0');
-
     $event->setResponse($response);
 
     if ($seamless_debug) {
-      $msg = __FUNCTION__ . "() - destination = $destination ---- "
+      $dest_str = $using_openid_connect ? ($path ?? '') : ($destination ?? '');
+      $msg = __FUNCTION__ . "() - destination = " . $dest_str . " using " . ($using_openid_connect ? 'openid_connect' : 'cilogon_auth')
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      \Drupal::messenger()->addStatus($msg);
+      error_log('seamless: ' . $msg);
+      \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
     }
   }
 
@@ -272,7 +378,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   }
 
   /**
-   * Subscribe to onRequest events.
+   * Subscribe to onRequest and onResponse events.
    *
    * Check if a CILogon redirect is needed any time a page is requested.
    *
@@ -280,6 +386,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    */
   public static function getSubscribedEvents() {
     $events[KernelEvents::REQUEST][] = ['onRequest', 31];
+    $events[KernelEvents::RESPONSE][] = ['onResponse', -10];
     return $events;
   }
 
