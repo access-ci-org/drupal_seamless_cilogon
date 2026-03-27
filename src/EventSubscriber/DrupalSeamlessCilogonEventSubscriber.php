@@ -299,18 +299,39 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $moduleHandler = \Drupal::service('module_handler');
     $using_openid_connect = $moduleHandler->moduleExists('openid_connect_cilogon_client');
     
+    // Check if the middleware redirected us here with a 'redirect' param
+    // containing the original destination (e.g. /user?redirect=%2Fsome%2Fpage).
+    $redirect_param = $request->query->get('redirect');
+    if ($redirect_param) {
+      // Validate it's a relative path to prevent open redirects.
+      $decoded = urldecode($redirect_param);
+      if (str_starts_with($decoded, '/') && !str_starts_with($decoded, '//')) {
+        $parsed = parse_url($decoded);
+        $destination_path = $parsed['path'] ?? '/';
+        $destination_query = $parsed['query'] ?? NULL;
+      }
+      else {
+        $destination_path = NULL;
+        $destination_query = NULL;
+      }
+    }
+    else {
+      $destination_path = NULL;
+      $destination_query = NULL;
+    }
+
     if ($using_openid_connect) {
       // Use openid_connect
       $config_name = 'openid_connect.settings.' . $client_name;
       $configuration = $container->get('config.factory')->get($config_name)->get('settings');
       $pluginManager = $container->get('plugin.manager.openid_connect_client');
       $client = $pluginManager->createInstance($client_name, $configuration);
-      
+
       // Set destination in session for openid_connect.
       // Must use array format: [$path, ['query' => $queryString]]
       // to match OpenIDConnectSession::saveDestination().
-      $path = $request->getPathInfo();
-      $query = $request->getQueryString();
+      $path = $destination_path ?? $request->getPathInfo();
+      $query = $destination_query ?? $request->getQueryString();
 
       $_SESSION['openid_connect_op'] = 'login';
       $_SESSION['openid_connect_destination'] = [
@@ -319,7 +340,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
           'query' => $query,
         ],
       ];
-      
+
       // Get scopes from client
       $scopes = implode(' ', $client->getClientScopes());
       $response = $client->authorize($scopes);
@@ -332,12 +353,14 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $claims = $container->get('cilogon_auth.claims');
       $client = $pluginManager->createInstance($client_name, $configuration);
       $scopes = $claims->getScopes();
-      
-      $destination = $request->getRequestUri();
-      
+
+      $destination = $destination_path !== NULL
+        ? $destination_path . ($destination_query ? '?' . $destination_query : '')
+        : $request->getRequestUri();
+
       $_SESSION['cilogon_auth_op'] = 'login';
       $_SESSION['cilogon_auth_destination'] = $destination;
-      
+
       $response = $client->authorize($scopes);
     }
     
@@ -346,6 +369,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     if ($seamless_debug) {
       $dest_str = $using_openid_connect ? ($path ?? '') : ($destination ?? '');
+      $dest_str .= $destination_path ? " (from redirect param: $destination_path)" : '';
       $msg = __FUNCTION__ . "() - destination = " . $dest_str . " using " . ($using_openid_connect ? 'openid_connect' : 'cilogon_auth')
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
       error_log('seamless: ' . $msg);
