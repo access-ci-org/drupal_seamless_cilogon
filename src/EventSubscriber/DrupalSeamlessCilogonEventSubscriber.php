@@ -100,6 +100,20 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // If the user is authenticated, no need to redirect to CILogon,
     // unless cookie doesn't exist, in which case, logout.
     if ($user_is_authenticated) {
+      // Skip SSO cookie enforcement for API routes or service accounts.
+      // - API routes: machine-to-machine; the SSO cookie is a browser concept.
+      // - Service accounts (e.g. mcp_bot): authenticate via /user/login, not
+      //   CILogon, so they will never have the SSO cookie.
+      $path = $request->getPathInfo();
+      if (str_starts_with($path, '/api/') || str_starts_with($path, '/jsonapi/')) {
+        return;
+      }
+      $bypass_roles = ['mcp_bot', 'administrator'];
+      $user_roles = \Drupal::currentUser()->getRoles();
+      if (array_intersect($bypass_roles, $user_roles)) {
+        return;
+      }
+
       // Unless cookie doesn't exist. In this case, logout.
       // BUT: Don't logout if we just set the cookie (it won't be in the request yet)
       if (
