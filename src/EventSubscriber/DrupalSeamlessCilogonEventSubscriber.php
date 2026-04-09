@@ -171,20 +171,20 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $cookie_value = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
       $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
       $cookie_expiration = strtotime($cookie_expiration);
-      $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
-      
+      $cookie_domain = $this->getEffectiveCookieDomain();
+
       $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
-      
+
       $response = $event->getResponse();
       $response->headers->setCookie($cookie);
-      
+
       // Mark that we just set the cookie so we don't logout on next request
       $request->getSession()->set('seamless_cilogon_cookie_was_set', TRUE);
 
       $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
       if ($seamless_debug) {
-        $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = " 
-          . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
+        $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = "
+          . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = " . ($cookie_domain ?? '(current host)')
           . ' -- ' . basename(__FILE__) . ':' . __LINE__;
         \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
       }
@@ -204,7 +204,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
     // Use value from form.
     $cookie_expiration = strtotime($cookie_expiration);
-    $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+    $cookie_domain = $this->getEffectiveCookieDomain();
     $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
 
     $request = $event->getRequest();
@@ -252,7 +252,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    */
   protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name, $cookie_exists = TRUE) {
 
-    $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+    $cookie_domain = $this->getEffectiveCookieDomain();
 
     user_logout();
 
@@ -413,6 +413,34 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // Return true if the current domain is 'access-support'.
     return $domain_verified;
+  }
+
+  /**
+   * Get the effective cookie domain for the current request.
+   *
+   * If the current request host is a subdomain of the configured cookie
+   * domain, use the configured domain (for cross-subdomain SSO). Otherwise,
+   * fall back to the current request host so the cookie works on environments
+   * like Pantheon multidevs (e.g. md-2681-accessmatch.pantheonsite.io).
+   *
+   * @return string|null
+   *   The cookie domain to use, or NULL to use the current host only.
+   */
+  protected function getEffectiveCookieDomain() {
+    $configured_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+    $host = \Drupal::request()->getHost();
+
+    // Normalize: ensure configured domain has leading dot for comparison.
+    $match_domain = ltrim($configured_domain, '.');
+
+    // If the host is the configured domain itself or a subdomain of it, use it.
+    if ($host === $match_domain || str_ends_with($host, '.' . $match_domain)) {
+      return $configured_domain;
+    }
+
+    // Host doesn't match configured domain (e.g. Pantheon multidev).
+    // Return NULL so Symfony Cookie scopes to the current host only.
+    return NULL;
   }
 
   /**
