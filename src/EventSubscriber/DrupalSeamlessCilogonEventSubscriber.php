@@ -262,12 +262,11 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $redir->headers->set('Cache-Control', 'public, max-age=0');
     $redir->addCacheableDependency($destination);
 
-    // Use Symfony Cookie on the response headers for reliable deletion.
-    if ($cookie_exists) {
-      $expireCookie = new Cookie($cookie_name, '', strtotime('-1 hour'), '/', $cookie_domain);
-      $redir->headers->setCookie($expireCookie);
-      unset($_COOKIE[$cookie_name]);
-    }
+    // Always send an expired cookie to ensure deletion, even if we didn't
+    // detect it in the request (e.g. timing or domain mismatch edge cases).
+    $expireCookie = new Cookie($cookie_name, '', 1, '/', $cookie_domain);
+    $redir->headers->setCookie($expireCookie);
+    unset($_COOKIE[$cookie_name]);
 
     $event->setResponse($redir);
 

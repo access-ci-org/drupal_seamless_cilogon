@@ -91,7 +91,6 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    $user_is_authenticated = \Drupal::currentUser()->isAuthenticated();
     $path = $request->getRequestUri();
     $arg = explode('/', $path);
     $cookie_name = isset($_COOKIE['SESSaccesscisso']) ? $_COOKIE['SESSaccesscisso'] : NULL;
@@ -121,10 +120,14 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    // If the user is authenticated, no need to redirect to CILogon, unless cookie doesn't exist, in
-    // which case, let the EventSubscriber handle the logout.
-    if ($user_is_authenticated) {
-      // The EventSubscriber will handle logout if cookie is missing
+    // If the user has a Drupal session cookie, they are likely authenticated.
+    // We cannot use \Drupal::currentUser() here because this middleware runs
+    // before the session middleware resolves the user. Instead, check for the
+    // Drupal session cookie directly: SESS<hex32> (HTTP) or SSESS<hex32> (HTTPS).
+    if ($this->hasSessionCookie($request)) {
+      if ($logging) {
+        $this->logger->notice('session cookie detected, passing through');
+      }
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
@@ -145,6 +148,28 @@ class CookieMiddleware implements HttpKernelInterface {
     }
 
     return $this->httpKernel->handle($request, $type, $catch);
+  }
+
+  /**
+   * Check if the request has a Drupal session cookie.
+   *
+   * Drupal session cookies follow the pattern SESS<hex32> (HTTP) or
+   * SSESS<hex32> (HTTPS). This is used as a proxy for authentication
+   * in middleware, where \Drupal::currentUser() is not yet resolved.
+   *
+   * @param \Symfony\Component\HttpFoundation\Request $request
+   *   The current request.
+   *
+   * @return bool
+   *   TRUE if a Drupal session cookie is present.
+   */
+  protected function hasSessionCookie(Request $request) {
+    foreach ($request->cookies->all() as $name => $value) {
+      if (preg_match('/^S?SESS[a-f0-9]{32}$/', $name)) {
+        return TRUE;
+      }
+    }
+    return FALSE;
   }
 
   /**
