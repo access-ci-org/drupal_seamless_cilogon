@@ -171,20 +171,20 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $cookie_value = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
       $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
       $cookie_expiration = strtotime($cookie_expiration);
-      $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
-      
+      $cookie_domain = $this->getEffectiveCookieDomain();
+
       $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
-      
+
       $response = $event->getResponse();
       $response->headers->setCookie($cookie);
-      
+
       // Mark that we just set the cookie so we don't logout on next request
       $request->getSession()->set('seamless_cilogon_cookie_was_set', TRUE);
 
       $seamless_debug = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
       if ($seamless_debug) {
-        $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = " 
-          . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
+        $msg = __FUNCTION__ . "() - Set cookie on response: name = $cookie_name, value = $cookie_value, expiration = "
+          . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = " . ($cookie_domain ?? '(current host)')
           . ' -- ' . basename(__FILE__) . ':' . __LINE__;
         \Drupal::logger('drupal_seamless_cilogon')->notice($msg);
       }
@@ -204,7 +204,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $cookie_expiration = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
     // Use value from form.
     $cookie_expiration = strtotime($cookie_expiration);
-    $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+    $cookie_domain = $this->getEffectiveCookieDomain();
     $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
 
     $request = $event->getRequest();
@@ -252,7 +252,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    */
   protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name, $cookie_exists = TRUE) {
 
-    $cookie_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+    $cookie_domain = $this->getEffectiveCookieDomain();
 
     user_logout();
 
@@ -262,12 +262,11 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $redir->headers->set('Cache-Control', 'public, max-age=0');
     $redir->addCacheableDependency($destination);
 
-    // Use Symfony Cookie on the response headers for reliable deletion.
-    if ($cookie_exists) {
-      $expireCookie = new Cookie($cookie_name, '', strtotime('-1 hour'), '/', $cookie_domain);
-      $redir->headers->setCookie($expireCookie);
-      unset($_COOKIE[$cookie_name]);
-    }
+    // Always send an expired cookie to ensure deletion, even if we didn't
+    // detect it in the request (e.g. timing or domain mismatch edge cases).
+    $expireCookie = new Cookie($cookie_name, '', 1, '/', $cookie_domain);
+    $redir->headers->setCookie($expireCookie);
+    unset($_COOKIE[$cookie_name]);
 
     $event->setResponse($redir);
 
@@ -299,27 +298,67 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $moduleHandler = \Drupal::service('module_handler');
     $using_openid_connect = $moduleHandler->moduleExists('openid_connect_cilogon_client');
     
+    // Check if the middleware redirected us here with a 'redirect' param
+    // containing the original destination (e.g. /user?redirect=%2Fsome%2Fpage).
+    // Note: Symfony already URL-decodes query param values, so no urldecode().
+    $redirect_param = $request->query->get('redirect');
+    if ($redirect_param) {
+      // Validate it's a relative path to prevent open redirects.
+      if (str_starts_with($redirect_param, '/') && !str_starts_with($redirect_param, '//')) {
+        $parsed = parse_url($redirect_param);
+        $destination_path = $parsed['path'] ?? '/';
+        $destination_query = $parsed['query'] ?? NULL;
+      }
+      else {
+        $destination_path = NULL;
+        $destination_query = NULL;
+      }
+    }
+    else {
+      $destination_path = NULL;
+      $destination_query = NULL;
+    }
+
+    // Resolve the path and query for the post-login destination.
+    // When we have a destination from the middleware's redirect param, use it
+    // (including its query, which may be NULL). Otherwise fall back to the
+    // current request's path and query.
+    if ($destination_path !== NULL) {
+      $dest_path = $destination_path;
+      $dest_query = $destination_query;
+    }
+    else {
+      $dest_path = $request->getPathInfo();
+      $dest_query = $request->getQueryString();
+    }
+
+    // Ensure the PHP session is started before writing to $_SESSION.
+    // For anonymous users the session may not be active yet; without this,
+    // $_SESSION writes are lost when $client->authorize() internally calls
+    // session_start() via OpenIDConnectStateToken::create(), which resets
+    // $_SESSION to empty.
+    if (session_status() === PHP_SESSION_NONE) {
+      \Drupal::service('session_manager')->start();
+    }
+
     if ($using_openid_connect) {
       // Use openid_connect
       $config_name = 'openid_connect.settings.' . $client_name;
       $configuration = $container->get('config.factory')->get($config_name)->get('settings');
       $pluginManager = $container->get('plugin.manager.openid_connect_client');
       $client = $pluginManager->createInstance($client_name, $configuration);
-      
+
       // Set destination in session for openid_connect.
       // Must use array format: [$path, ['query' => $queryString]]
       // to match OpenIDConnectSession::saveDestination().
-      $path = $request->getPathInfo();
-      $query = $request->getQueryString();
-
       $_SESSION['openid_connect_op'] = 'login';
       $_SESSION['openid_connect_destination'] = [
-        $path,
+        $dest_path,
         [
-          'query' => $query,
+          'query' => $dest_query,
         ],
       ];
-      
+
       // Get scopes from client
       $scopes = implode(' ', $client->getClientScopes());
       $response = $client->authorize($scopes);
@@ -332,12 +371,12 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $claims = $container->get('cilogon_auth.claims');
       $client = $pluginManager->createInstance($client_name, $configuration);
       $scopes = $claims->getScopes();
-      
-      $destination = $request->getRequestUri();
-      
+
+      $destination = $dest_path . ($dest_query ? '?' . $dest_query : '');
+
       $_SESSION['cilogon_auth_op'] = 'login';
       $_SESSION['cilogon_auth_destination'] = $destination;
-      
+
       $response = $client->authorize($scopes);
     }
     
@@ -345,7 +384,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $event->setResponse($response);
 
     if ($seamless_debug) {
-      $dest_str = $using_openid_connect ? ($path ?? '') : ($destination ?? '');
+      $dest_str = $dest_path . ($dest_query ? '?' . $dest_query : '');
+      $dest_str .= $redirect_param ? " (from redirect param)" : '';
       $msg = __FUNCTION__ . "() - destination = " . $dest_str . " using " . ($using_openid_connect ? 'openid_connect' : 'cilogon_auth')
         . ' -- ' . basename(__FILE__) . ':' . __LINE__;
       error_log('seamless: ' . $msg);
@@ -389,6 +429,34 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // Return true if the current domain is 'access-support'.
     return $domain_verified;
+  }
+
+  /**
+   * Get the effective cookie domain for the current request.
+   *
+   * If the current request host is a subdomain of the configured cookie
+   * domain, use the configured domain (for cross-subdomain SSO). Otherwise,
+   * fall back to the current request host so the cookie works on environments
+   * like Pantheon multidevs (e.g. md-2681-accessmatch.pantheonsite.io).
+   *
+   * @return string|null
+   *   The cookie domain to use, or NULL to use the current host only.
+   */
+  protected function getEffectiveCookieDomain() {
+    $configured_domain = \Drupal::state()->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
+    $host = \Drupal::request()->getHost();
+
+    // Normalize: ensure configured domain has leading dot for comparison.
+    $match_domain = ltrim($configured_domain, '.');
+
+    // If the host is the configured domain itself or a subdomain of it, use it.
+    if ($host === $match_domain || str_ends_with($host, '.' . $match_domain)) {
+      return $configured_domain;
+    }
+
+    // Host doesn't match configured domain (e.g. Pantheon multidev).
+    // Return NULL so Symfony Cookie scopes to the current host only.
+    return NULL;
   }
 
   /**
