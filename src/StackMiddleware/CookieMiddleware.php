@@ -3,6 +3,7 @@
 namespace Drupal\drupal_seamless_cilogon\StackMiddleware;
 
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -57,7 +58,7 @@ class CookieMiddleware implements HttpKernelInterface {
   /**
    * {@inheritdoc}
    */
-  public function handle(Request $request, $type = self::MASTER_REQUEST, $catch = TRUE) {
+  public function handle(Request $request, int $type = self::MAIN_REQUEST, bool $catch = true): Response {
     $logging = $this->state->get('drupal_seamless_cilogon.logging');
     if (!$type) {
       if ($logging) {
