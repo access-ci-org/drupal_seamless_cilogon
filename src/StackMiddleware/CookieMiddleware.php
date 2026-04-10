@@ -134,7 +134,7 @@ class CookieMiddleware implements HttpKernelInterface {
     // If here -- user is unauthenticated.  If cookie exists, redirect to cilogon.
     if ($cookie_exists) {
       if ($logging) {
-        $this->logger->notice('redirect /user?redirect=path');
+        $this->logger->notice('redirect /user/login?redirect=path');
       }
       // Sanitize the request URI to prevent open redirects
       $from = $request->getRequestUri();
@@ -144,7 +144,7 @@ class CookieMiddleware implements HttpKernelInterface {
       }
       // URL encode the path to prevent injection
       $from_encoded = urlencode($from);
-      return new RedirectResponse($request->getBasePath() . "/user?redirect=$from_encoded", 302, ['Cache-Control' => 'no-cache']);
+      return new RedirectResponse($request->getBasePath() . "/user/login?redirect=$from_encoded", 302, ['Cache-Control' => 'no-cache']);
     }
 
     return $this->httpKernel->handle($request, $type, $catch);
