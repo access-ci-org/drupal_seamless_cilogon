@@ -2,4 +2,4 @@ name: Drupal Seamless Cilogon
 description: Drupal Seamless Cilogon Module
 package: Custom
 type: module
-core_version_requirement: ^9 || ^10
+core_version_requirement: ^10 || ^11
