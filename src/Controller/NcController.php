@@ -31,7 +31,7 @@ class NcController extends ControllerBase {
    * {@inheritdoc}
    */
   public static function create(ContainerInterface $container) {
-    return new static(
+    return new self(
       $container->get('page_cache_kill_switch')
     );
   }
