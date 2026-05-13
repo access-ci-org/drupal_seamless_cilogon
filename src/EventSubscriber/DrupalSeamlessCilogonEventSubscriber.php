@@ -63,8 +63,14 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface
       error_log('seamless: ' . $msg);
     }
 
-    // if coming back from cilogon, set the cookie
-    if ($route_name === 'cilogon_auth.redirect_controller_redirect') {
+    // if coming back from cilogon, set the cookie. Accept both the legacy
+    // cilogon_auth route and the newer openid_connect route — the site has
+    // migrated to openid_connect_cilogon_client but the cilogon_auth module
+    // is still registered (as zombie code) so its route resolves too.
+    if (
+      $route_name === 'cilogon_auth.redirect_controller_redirect' ||
+      $route_name === 'openid_connect.redirect_controller_redirect'
+    ) {
       if (!$cookie_exists) {
         $this->doSetCookie($event, $seamless_debug, $cookie_name);
       }
