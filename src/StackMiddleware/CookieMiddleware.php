@@ -54,6 +54,8 @@ class CookieMiddleware implements HttpKernelInterface {
   /**
    * Constructs a CookieMiddleware object.
    *
+   * @param \Symfony\Component\HttpKernel\HttpKernelInterface $httpKernel
+   *   The decorated kernel.
    * @param \Drupal\Core\Logger\LoggerChannelFactoryInterface $loggerFactory
    *   The logger factory service.
    * @param \Drupal\Core\State\StateInterface $state
@@ -64,11 +66,13 @@ class CookieMiddleware implements HttpKernelInterface {
    *   The entity type manager.
    */
   public function __construct(
+    HttpKernelInterface $httpKernel,
     LoggerChannelFactoryInterface $loggerFactory,
     StateInterface $state,
     ModuleHandlerInterface $moduleHandler,
     EntityTypeManagerInterface $entityTypeManager,
   ) {
+    $this->httpKernel = $httpKernel;
     $this->logger = $loggerFactory->get('drupal_seamless_cilogon');
     $this->state = $state;
     $this->moduleHandler = $moduleHandler;
