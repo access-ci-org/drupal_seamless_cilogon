@@ -22,5 +22,6 @@ services:
       - '@token'
       - '@module_handler'
       - '@session_manager'
+      - '@service_container'
     tags:
       - { name: 'event_subscriber' }

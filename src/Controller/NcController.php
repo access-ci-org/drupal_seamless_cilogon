@@ -30,16 +30,20 @@ class NcController extends ControllerBase {
   /**
    * {@inheritdoc}
    */
-  public static function create(ContainerInterface $container) {
-    return new self(
+  public static function create(ContainerInterface $container): static {
+    // @phpstan-ignore-next-line
+    return new static(
       $container->get('page_cache_kill_switch')
     );
   }
 
   /**
    * Build content to display on page.
+   *
+   * @return array<string, mixed>
+   *   Render array.
    */
-  public function noCache() {
+  public function noCache(): array {
     $this->killSwitch->trigger();
     $url = Url::fromRoute('<front>', [], ['absolute' => 'true'])->toString();
     $home = new RedirectResponse($url);

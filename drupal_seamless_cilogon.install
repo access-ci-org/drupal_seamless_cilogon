@@ -8,13 +8,13 @@
 /**
  * Set state.
  */
-function drupal_seamless_cilogon_install() {
+function drupal_seamless_cilogon_install(): void {
   \Drupal::state()->set('drupal_seamless_cilogon.logging', 0);
 }
 
 /**
  * Set state.
  */
-function drupal_seamless_cilogon_update_9000() {
+function drupal_seamless_cilogon_update_9000(): void {
   \Drupal::state()->set('drupal_seamless_cilogon.logging', 0);
 }

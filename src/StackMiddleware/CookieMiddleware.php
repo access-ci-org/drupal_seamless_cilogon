@@ -85,7 +85,7 @@ class CookieMiddleware implements HttpKernelInterface {
    * @param \Symfony\Component\HttpKernel\HttpKernelInterface $kernel
    *   The HTTP kernel to wrap.
    */
-  public function setHttpKernel(HttpKernelInterface $kernel) {
+  public function setHttpKernel(HttpKernelInterface $kernel): void {
     $this->httpKernel = $kernel;
   }
 
@@ -126,7 +126,7 @@ class CookieMiddleware implements HttpKernelInterface {
 
     $path = $request->getRequestUri();
     $arg = explode('/', $path);
-    $cookie_name = $_COOKIE['SESSaccesscisso'] ?? NULL;
+    $cookie_name = $request->cookies->get('SESSaccesscisso');
     $cookie_exists = NULL !== $cookie_name;
 
     if (str_starts_with($arg[1], 'user')) {
@@ -227,9 +227,11 @@ class CookieMiddleware implements HttpKernelInterface {
       return TRUE;
     }
 
+    /** @var \Drupal\domain\DomainStorageInterface $domain_storage */
     $domain_storage = $this->entityTypeManager->getStorage('domain');
-    $current_domain_name = $domain_storage->loadDefaultId();
+    $current_domain_name = (string) $domain_storage->loadDefaultId();
 
+    // @phpstan-ignore-next-line
     $domain_verified = $current_domain_name === 'amp_cyberinfrastructure_org';
 
     // Return true if the current domain is 'access-support'.

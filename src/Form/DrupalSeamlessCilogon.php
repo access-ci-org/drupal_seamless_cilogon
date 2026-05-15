@@ -56,8 +56,9 @@ class DrupalSeamlessCilogon extends FormBase {
   /**
    * {@inheritdoc}
    */
-  public static function create(ContainerInterface $container) {
-    return new self(
+  public static function create(ContainerInterface $container): static {
+    // @phpstan-ignore-next-line
+    return new static(
       $container->get('state'),
       $container->get('config.factory'),
       $container->get('messenger')
@@ -66,8 +67,16 @@ class DrupalSeamlessCilogon extends FormBase {
 
   /**
    * {@inheritdoc}
+   *
+   * @param array<string, mixed> $form
+   *   The form array.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The form state object.
+   *
+   * @return array<string, mixed>
+   *   The form render array.
    */
-  public function buildForm(array $form, FormStateInterface $form_state) {
+  public function buildForm(array $form, FormStateInterface $form_state): array {
     $seamless_debug = $this->state->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
 
     $seamless_middleware_logging = $this->state->get('drupal_seamless_cilogon.logging');
@@ -143,24 +152,29 @@ class DrupalSeamlessCilogon extends FormBase {
     return 'drupal_seamless_cilogon_form';
   }
 
-  // @todo Implements any form validation?  Maybe especially for the cookie expiration ?
-
   /**
    * {@inheritdoc}
+   *
+   * @param array<string, mixed> $form
+   *   The form array.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The form state object.
+   *
+   * @todo Implement form validation, especially for the cookie expiration.
    */
-  public function submitForm(array &$form, FormStateInterface $form_state) {
+  public function submitForm(array &$form, FormStateInterface $form_state): void {
 
   }
 
   /**
    * Saves seamless CILogon settings from the form submission.
    *
-   * @param array $form
+   * @param array<string, mixed> $form
    *   The form array.
    * @param \Drupal\Core\Form\FormStateInterface $form_state
    *   The form state object.
    */
-  public function doSaveSeamlessSettings(array &$form, FormStateInterface $form_state) {
+  public function doSaveSeamlessSettings(array &$form, FormStateInterface $form_state): void {
     $this->state->set('drupal_seamless_cilogon.seamless_login_enabled', Xss::filter($form_state->getValue('seamless_login_enabled')));
     $this->state->set('drupal_seamless_cilogon.seamless_cookie_value', Xss::filter($form_state->getValue('seamless_cookie_value')));
     $this->state->set('drupal_seamless_cilogon.seamless_cookie_domain', Xss::filter($form_state->getValue('seamless_cookie_domain')));

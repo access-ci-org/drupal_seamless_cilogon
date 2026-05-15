@@ -12,7 +12,9 @@ use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\Core\Session\SessionManagerInterface;
 use Drupal\Core\State\StateInterface;
 use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\Utility\Token;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\RequestStack;
@@ -24,6 +26,8 @@ use Symfony\Component\HttpKernel\KernelEvents;
  * Event Subscriber DrupalSeamlessCilogonEventSubscriber.
  */
 class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
+
+  use StringTranslationTrait;
 
   // For pantheon, cookie name must follow pattern S+ESS[a-z0-9]+
   // (see https://docs.pantheon.io/cookies#cache-busting-cookies)
@@ -100,6 +104,13 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   protected $sessionManager;
 
   /**
+   * The service container.
+   *
+   * @var \Symfony\Component\DependencyInjection\ContainerInterface
+   */
+  protected $container;
+
+  /**
    * Constructs the event subscriber.
    *
    * @param \Drupal\Core\State\StateInterface $state
@@ -122,6 +133,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    *   The module handler.
    * @param \Drupal\Core\Session\SessionManagerInterface $session_manager
    *   The session manager.
+   * @param \Symfony\Component\DependencyInjection\ContainerInterface $container
+   *   The service container.
    */
   public function __construct(
     StateInterface $state,
@@ -134,6 +147,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     Token $token,
     ModuleHandlerInterface $module_handler,
     SessionManagerInterface $session_manager,
+    ContainerInterface $container,
   ) {
     $this->state = $state;
     $this->configFactory = $config_factory;
@@ -145,6 +159,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $this->token = $token;
     $this->moduleHandler = $module_handler;
     $this->sessionManager = $session_manager;
+    $this->container = $container;
   }
 
   /**
@@ -153,7 +168,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    * Support seamless login by checking if a non-authenticated user already
    * has already been through seamless login.
    */
-  public function onRequest(RequestEvent $event) {
+  public function onRequest(RequestEvent $event): void {
 
     if (!$event->isMainRequest()) {
       return;
@@ -189,7 +204,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $cookie_just_set = $session->get('seamless_cilogon_cookie_was_set', FALSE);
 
     if ($seamless_debug) {
-      $cookie_value_safe = $cookie_exists ? Html::escape($_COOKIE[$cookie_name]) : '<not set>';
+      $cookie_value_safe = $cookie_exists ? Html::escape((string) $current_request->cookies->get($cookie_name)) : '<not set>';
       $auth_status = $user_is_authenticated ? "TRUE" : "FALSE";
       $cookie_status = $cookie_exists ? "TRUE (value: $cookie_value_safe)" : "FALSE";
       $just_set_status = $cookie_just_set ? "TRUE" : "FALSE";
@@ -262,7 +277,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
         // Redirect to CILogon logout.
         $destination = 'https://cilogon.org/logout/?skin=access';
-        $redir = new TrustedRedirectResponse($destination, '302');
+        $redir = new TrustedRedirectResponse($destination, 302);
         $redir->headers->set('Cache-Control', 'public, max-age=0');
         $redir->addCacheableDependency($destination);
         $event->setResponse($redir);
@@ -288,7 +303,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    * @param \Symfony\Component\HttpKernel\Event\ResponseEvent $event
    *   Response event.
    */
-  public function onResponse(ResponseEvent $event) {
+  public function onResponse(ResponseEvent $event): void {
     if (!$event->isMainRequest()) {
       return;
     }
@@ -336,7 +351,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    * @param string $cookie_name
    *   The cookie name to set.
    */
-  protected function doSetCookie(RequestEvent $event, $seamless_debug, $cookie_name) {
+  protected function doSetCookie(RequestEvent $event, bool $seamless_debug, string $cookie_name): void {
 
     $site_name = $this->configFactory->get('system.site')->get('name');
     $cookie_value = $this->state->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
@@ -358,7 +373,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     //
     // commenting this out to see unnecessary
     // \Drupal::service('page_cache_kill_switch')->trigger();
-    $redir = new TrustedRedirectResponse($destination, '302');
+    $redir = new TrustedRedirectResponse($destination, 302);
     $redir->headers->setCookie($cookie);
     $redir->headers->set('Cache-Control', 'public, max-age=0');
     $redir->addCacheableDependency($destination);
@@ -389,7 +404,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    * @param bool $cookie_exists
    *   Whether the cookie currently exists in the request.
    */
-  protected function doDeleteCookie(RequestEvent $event, $seamless_debug, $cookie_name, $cookie_exists = TRUE) {
+  protected function doDeleteCookie(RequestEvent $event, bool $seamless_debug, string $cookie_name, bool $cookie_exists = TRUE): void {
 
     $cookie_domain = $this->getEffectiveCookieDomain();
 
@@ -397,7 +412,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     $destination = 'https://cilogon.org/logout/?skin=access';
 
-    $redir = new TrustedRedirectResponse($destination, '302');
+    $redir = new TrustedRedirectResponse($destination, 302);
     $redir->headers->set('Cache-Control', 'public, max-age=0');
     $redir->addCacheableDependency($destination);
 
@@ -405,7 +420,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // detect it in the request (e.g. timing or domain mismatch edge cases).
     $expireCookie = new Cookie($cookie_name, '', 1, '/', $cookie_domain);
     $redir->headers->setCookie($expireCookie);
-    unset($_COOKIE[$cookie_name]);
 
     $event->setResponse($redir);
 
@@ -427,13 +441,12 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    * @param bool $seamless_debug
    *   Whether debug mode is enabled.
    */
-  protected function doRedirectToCilogon(RequestEvent $event, $seamless_debug) {
+  protected function doRedirectToCilogon(RequestEvent $event, bool $seamless_debug): void {
     $request = $event->getRequest();
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
     // Setup redirect to CILogon flow.
-    /** @phpstan-ignore-next-line Service container access needed for plugin instantiation */
-    $container = \Drupal::getContainer();
+    $container = $this->container;
     $client_name = 'cilogon';
 
     // Try openid_connect first, fallback to cilogon_auth.
@@ -554,7 +567,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       return TRUE;
     }
 
-    $domainName = t("[domain:name]");
+    $domainName = $this->t("[domain:name]");
     $current_domain_name = Html::getClass($this->token->replace($domainName));
 
     $domain_verified = $current_domain_name === 'access-support';
