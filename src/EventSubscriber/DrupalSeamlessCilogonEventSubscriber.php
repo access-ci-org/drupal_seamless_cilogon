@@ -14,7 +14,9 @@ use Drupal\Core\State\StateInterface;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\Utility\Token;
-use Symfony\Component\DependencyInjection\ContainerInterface;
+use Drupal\cilogon_auth\CILogonAuthClaims;
+use Drupal\cilogon_auth\Plugin\CILogonAuthClientManager;
+use Drupal\openid_connect\Plugin\OpenIDConnectClientManager;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\RequestStack;
@@ -104,11 +106,25 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   protected $sessionManager;
 
   /**
-   * The service container.
+   * The OpenID Connect client plugin manager.
    *
-   * @var \Symfony\Component\DependencyInjection\ContainerInterface
+   * @var \Drupal\openid_connect\Plugin\OpenIDConnectClientManager
    */
-  protected $container;
+  protected $openidConnectPluginManager;
+
+  /**
+   * The CILogon Auth client plugin manager (legacy).
+   *
+   * @var \Drupal\cilogon_auth\Plugin\CILogonAuthClientManager
+   */
+  protected $cilogonAuthPluginManager;
+
+  /**
+   * The CILogon Auth claims service (legacy).
+   *
+   * @var \Drupal\cilogon_auth\CILogonAuthClaims
+   */
+  protected $cilogonAuthClaims;
 
   /**
    * Constructs the event subscriber.
@@ -133,8 +149,12 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    *   The module handler.
    * @param \Drupal\Core\Session\SessionManagerInterface $session_manager
    *   The session manager.
-   * @param \Symfony\Component\DependencyInjection\ContainerInterface $container
-   *   The service container.
+   * @param \Drupal\openid_connect\Plugin\OpenIDConnectClientManager $openid_connect_plugin_manager
+   *   The OpenID Connect client plugin manager.
+   * @param \Drupal\cilogon_auth\Plugin\CILogonAuthClientManager $cilogon_auth_plugin_manager
+   *   The CILogon Auth client plugin manager (legacy).
+   * @param \Drupal\cilogon_auth\CILogonAuthClaims $cilogon_auth_claims
+   *   The CILogon Auth claims service (legacy).
    */
   public function __construct(
     StateInterface $state,
@@ -147,7 +167,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     Token $token,
     ModuleHandlerInterface $module_handler,
     SessionManagerInterface $session_manager,
-    ContainerInterface $container,
+    OpenIDConnectClientManager $openid_connect_plugin_manager,
+    CILogonAuthClientManager $cilogon_auth_plugin_manager,
+    CILogonAuthClaims $cilogon_auth_claims,
   ) {
     $this->state = $state;
     $this->configFactory = $config_factory;
@@ -159,7 +181,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $this->token = $token;
     $this->moduleHandler = $module_handler;
     $this->sessionManager = $session_manager;
-    $this->container = $container;
+    $this->openidConnectPluginManager = $openid_connect_plugin_manager;
+    $this->cilogonAuthPluginManager = $cilogon_auth_plugin_manager;
+    $this->cilogonAuthClaims = $cilogon_auth_claims;
   }
 
   /**
@@ -446,7 +470,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
     // Setup redirect to CILogon flow.
-    $container = $this->container;
     $client_name = 'cilogon';
 
     // Try openid_connect first, fallback to cilogon_auth.
@@ -498,9 +521,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     if ($using_openid_connect) {
       // Use openid_connect.
       $config_name = 'openid_connect.settings.' . $client_name;
-      $configuration = $container->get('config.factory')->get($config_name)->get('settings');
-      $pluginManager = $container->get('plugin.manager.openid_connect_client');
-      $client = $pluginManager->createInstance($client_name, $configuration);
+      $configuration = $this->configFactory->get($config_name)->get('settings');
+      $client = $this->openidConnectPluginManager->createInstance($client_name, $configuration);
 
       // Set destination in session for openid_connect.
       // Must use array format: [$path, ['query' => $queryString]]
@@ -520,11 +542,9 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     else {
       // Fallback to cilogon_auth (legacy)
       $config_name = 'cilogon_auth.settings.' . $client_name;
-      $configuration = $container->get('config.factory')->get($config_name)->get('settings');
-      $pluginManager = $container->get('plugin.manager.cilogon_auth_client.processor');
-      $claims = $container->get('cilogon_auth.claims');
-      $client = $pluginManager->createInstance($client_name, $configuration);
-      $scopes = $claims->getScopes();
+      $configuration = $this->configFactory->get($config_name)->get('settings');
+      $client = $this->cilogonAuthPluginManager->createInstance($client_name, $configuration);
+      $scopes = $this->cilogonAuthClaims->getScopes();
 
       $destination = $dest_path . ($dest_query ? '?' . $dest_query : '');
 

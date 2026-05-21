@@ -22,6 +22,8 @@ services:
       - '@token'
       - '@module_handler'
       - '@session_manager'
-      - '@service_container'
+      - '@plugin.manager.openid_connect_client'
+      - '@plugin.manager.cilogon_auth_client.processor'
+      - '@cilogon_auth.claims'
     tags:
       - { name: 'event_subscriber' }
