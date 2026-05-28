@@ -2,6 +2,8 @@
 
 namespace Drupal\drupal_seamless_cilogon\StackMiddleware;
 
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\State\StateInterface;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -22,7 +24,7 @@ class CookieMiddleware implements HttpKernelInterface {
   protected $httpKernel;
 
   /**
-   * The RedirectAddAnalytics logging channel.
+   * The logging channel.
    *
    * @var \Drupal\Core\Logger\LoggerChannelInterface
    */
@@ -36,23 +38,55 @@ class CookieMiddleware implements HttpKernelInterface {
   protected $state;
 
   /**
-   * Constructs a drupal_seamless_cilogin object.
+   * The module handler.
    *
-   * @param \Symfony\Component\HttpKernel\HttpKernelInterface $kernel
+   * @var \Drupal\Core\Extension\ModuleHandlerInterface
+   */
+  protected $moduleHandler;
+
+  /**
+   * The entity type manager.
+   *
+   * @var \Drupal\Core\Entity\EntityTypeManagerInterface
+   */
+  protected $entityTypeManager;
+
+  /**
+   * Constructs a CookieMiddleware object.
+   *
+   * @param \Symfony\Component\HttpKernel\HttpKernelInterface $httpKernel
    *   The decorated kernel.
-   * @param \Drupal\Core\Logger\LoggerChannelFactoryInterface $config_factory
-   *   Logging interface.
+   * @param \Drupal\Core\Logger\LoggerChannelFactoryInterface $loggerFactory
+   *   The logger factory service.
    * @param \Drupal\Core\State\StateInterface $state
    *   The state key/value store.
+   * @param \Drupal\Core\Extension\ModuleHandlerInterface $moduleHandler
+   *   The module handler service.
+   * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entityTypeManager
+   *   The entity type manager.
    */
   public function __construct(
-    HttpKernelInterface $http_kernel,
-    LoggerChannelFactoryInterface $channelFactory,
-    StateInterface $state
+    HttpKernelInterface $httpKernel,
+    LoggerChannelFactoryInterface $loggerFactory,
+    StateInterface $state,
+    ModuleHandlerInterface $moduleHandler,
+    EntityTypeManagerInterface $entityTypeManager,
   ) {
-    $this->httpKernel = $http_kernel;
-    $this->logger = $channelFactory->get('drupal_seamless_cilogon');
+    $this->httpKernel = $httpKernel;
+    $this->logger = $loggerFactory->get('drupal_seamless_cilogon');
     $this->state = $state;
+    $this->moduleHandler = $moduleHandler;
+    $this->entityTypeManager = $entityTypeManager;
+  }
+
+  /**
+   * Sets the HTTP kernel.
+   *
+   * @param \Symfony\Component\HttpKernel\HttpKernelInterface $kernel
+   *   The HTTP kernel to wrap.
+   */
+  public function setHttpKernel(HttpKernelInterface $kernel): void {
+    $this->httpKernel = $kernel;
   }
 
   /**
@@ -67,14 +101,14 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    if (!$this->verify_domain_is_asp()) {
+    if (!$this->verifyDomainIsAsp()) {
       if ($logging) {
-        $this->logger->notice('verify_domain_is_asp');
+        $this->logger->notice('verifyDomainIsAsp');
       }
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    $seamless_login_enabled = \Drupal::state()->get('drupal_seamless_cilogon.seamless_login_enabled', TRUE);
+    $seamless_login_enabled = $this->state->get('drupal_seamless_cilogon.seamless_login_enabled', TRUE);
     if (!$seamless_login_enabled) {
       if ($logging) {
         $this->logger->notice('seamless_login_enabled');
@@ -83,8 +117,7 @@ class CookieMiddleware implements HttpKernelInterface {
     }
 
     // Don't attempt to redirect if neither cilogon module is installed.
-    $moduleHandler = \Drupal::service('module_handler');
-    if (!$moduleHandler->moduleExists('cilogon_auth') && !$moduleHandler->moduleExists('openid_connect_cilogon_client')) {
+    if (!$this->moduleHandler->moduleExists('cilogon_auth') && !$this->moduleHandler->moduleExists('openid_connect_cilogon_client')) {
       if ($logging) {
         $this->logger->notice('module exists cilogon_auth or openid_connect_cilogon_client');
       }
@@ -93,7 +126,7 @@ class CookieMiddleware implements HttpKernelInterface {
 
     $path = $request->getRequestUri();
     $arg = explode('/', $path);
-    $cookie_name = isset($_COOKIE['SESSaccesscisso']) ? $_COOKIE['SESSaccesscisso'] : NULL;
+    $cookie_name = $request->cookies->get('SESSaccesscisso');
     $cookie_exists = NULL !== $cookie_name;
 
     if (str_starts_with($arg[1], 'user')) {
@@ -104,7 +137,7 @@ class CookieMiddleware implements HttpKernelInterface {
     }
 
     // If coming back from cilogon, set the cookie.
-    // Support both old cilogon_auth and new openid_connect routes
+    // Support both old cilogon_auth and new openid_connect routes.
     if ($arg[1] === 'cilogon-auth' || $arg[1] === 'openid-connect') {
       if ($logging) {
         $this->logger->notice('path: /cilogon-auth or /openid-connect');
@@ -123,7 +156,8 @@ class CookieMiddleware implements HttpKernelInterface {
     // If the user has a Drupal session cookie, they are likely authenticated.
     // We cannot use \Drupal::currentUser() here because this middleware runs
     // before the session middleware resolves the user. Instead, check for the
-    // Drupal session cookie directly: SESS<hex32> (HTTP) or SSESS<hex32> (HTTPS).
+    // Drupal session cookie directly: SESS<hex32> (HTTP) or
+    // SSESS<hex32> (HTTPS).
     if ($this->hasSessionCookie($request)) {
       if ($logging) {
         $this->logger->notice('session cookie detected, passing through');
@@ -131,20 +165,22 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    // If here -- user is unauthenticated.  If cookie exists, redirect to cilogon.
+    // If here -- user is unauthenticated. If cookie exists, redirect to
+    // cilogon.
     if ($cookie_exists) {
       if ($logging) {
         $this->logger->notice('redirect /user/login?redirect=path');
       }
-      // Sanitize the request URI to prevent open redirects
+      // Sanitize the request URI to prevent open redirects.
       $from = $request->getRequestUri();
       // Ensure it's a relative path (starts with /)
       if (!str_starts_with($from, '/')) {
         $from = '/';
       }
-      // URL encode the path to prevent injection
+      // URL encode the path to prevent injection.
       $from_encoded = urlencode($from);
-      return new RedirectResponse($request->getBasePath() . "/user/login?redirect=$from_encoded", 302, ['Cache-Control' => 'no-cache']);
+      $path = $request->getBasePath() . "/user/login?redirect=$from_encoded";
+      return new RedirectResponse($path, 302, ['Cache-Control' => 'no-cache']);
     }
 
     return $this->httpKernel->handle($request, $type, $catch);
@@ -173,28 +209,29 @@ class CookieMiddleware implements HttpKernelInterface {
   }
 
   /**
-   * The ACCESS support portal uses the domain access module.  If this module
-   * is in use, we only want to set cookies for the 'access-support'
-   * module.
+   * Verifies if the domain access module is in use and current domain is ASP.
    *
-   * This function checks if the domain access module is in use, and
-   * if so, returns FALSE if the current domain name is not 'access-support'.
-   *
+   * The ACCESS support portal uses the domain access module. If this module
+   * is in use, we only want to set cookies for the 'access-support' module.
+   * This function checks if the domain access module is in use, and if so,
+   * returns FALSE if the current domain name is not 'access-support'.
    * Otherwise it returns true.
    *
-   * @return bool whether to proceed with the cookie logic in invoking code
+   * @return bool
+   *   Whether to proceed with the cookie logic in invoking code.
    */
-  protected function verify_domain_is_asp() {
+  protected function verifyDomainIsAsp() {
     // Verify the domain module is installed.  If not installed,
     // return true to proceed to CILogon.
-    $moduleHandler = \Drupal::service('module_handler');
-    if (!$moduleHandler->moduleExists('domain')) {
+    if (!$this->moduleHandler->moduleExists('domain')) {
       return TRUE;
     }
 
-    $domain_storage = \Drupal::entityTypeManager()->getStorage('domain');
-    $current_domain_name = $domain_storage->loadDefaultId();
+    /** @var \Drupal\domain\DomainStorageInterface $domain_storage */
+    $domain_storage = $this->entityTypeManager->getStorage('domain');
+    $current_domain_name = (string) $domain_storage->loadDefaultId();
 
+    // @phpstan-ignore-next-line
     $domain_verified = $current_domain_name === 'amp_cyberinfrastructure_org';
 
     // Return true if the current domain is 'access-support'.
