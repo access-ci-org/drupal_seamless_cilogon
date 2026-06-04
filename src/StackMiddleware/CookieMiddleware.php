@@ -116,10 +116,10 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    // Don't attempt to redirect if neither cilogon module is installed.
-    if (!$this->moduleHandler->moduleExists('cilogon_auth') && !$this->moduleHandler->moduleExists('openid_connect_cilogon_client')) {
+    // Don't attempt to redirect if openid_connect_cilogon_client not installed.
+    if (!$this->moduleHandler->moduleExists('openid_connect_cilogon_client')) {
       if ($logging) {
-        $this->logger->notice('module exists cilogon_auth or openid_connect_cilogon_client');
+        $this->logger->notice('module openid_connect_cilogon_client not installed');
       }
       return $this->httpKernel->handle($request, $type, $catch);
     }
@@ -136,11 +136,10 @@ class CookieMiddleware implements HttpKernelInterface {
       return $this->httpKernel->handle($request, $type, $catch);
     }
 
-    // If coming back from cilogon, set the cookie.
-    // Support both old cilogon_auth and new openid_connect routes.
-    if ($arg[1] === 'cilogon-auth' || $arg[1] === 'openid-connect') {
+    // If coming back from cilogon via openid_connect, pass through.
+    if ($arg[1] === 'openid-connect') {
       if ($logging) {
-        $this->logger->notice('path: /cilogon-auth or /openid-connect');
+        $this->logger->notice('path: /openid-connect');
       }
       return $this->httpKernel->handle($request, $type, $catch);
     }
