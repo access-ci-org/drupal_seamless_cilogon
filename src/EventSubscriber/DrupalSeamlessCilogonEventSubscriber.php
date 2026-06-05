@@ -14,6 +14,7 @@ use Drupal\Core\State\StateInterface;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\Utility\Token;
+use Drupal\openid_connect\OpenIDConnectClaims;
 use Drupal\openid_connect\Plugin\OpenIDConnectClientManager;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Cookie;
@@ -32,6 +33,10 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   // For pantheon, cookie name must follow pattern S+ESS[a-z0-9]+
   // (see https://docs.pantheon.io/cookies#cache-busting-cookies)
   const SEAMLESSCOOKIENAME = 'SESSaccesscisso';
+
+  // The OpenID Connect client plugin id used for the seamless flow. Shared
+  // source of truth for the plugin instance and its config lookup.
+  const CLIENT_NAME = 'cilogon';
 
   /**
    * The state service.
@@ -111,6 +116,13 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   protected $openidConnectPluginManager;
 
   /**
+   * The OpenID Connect claims service.
+   *
+   * @var \Drupal\openid_connect\OpenIDConnectClaims
+   */
+  protected $claims;
+
+  /**
    * Constructs the event subscriber.
    *
    * @param \Drupal\Core\State\StateInterface $state
@@ -135,6 +147,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    *   The session manager.
    * @param \Drupal\openid_connect\Plugin\OpenIDConnectClientManager $openid_connect_plugin_manager
    *   The OpenID Connect client plugin manager.
+   * @param \Drupal\openid_connect\OpenIDConnectClaims $claims
+   *   The OpenID Connect claims service.
    */
   public function __construct(
     StateInterface $state,
@@ -148,6 +162,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     ModuleHandlerInterface $module_handler,
     SessionManagerInterface $session_manager,
     OpenIDConnectClientManager $openid_connect_plugin_manager,
+    OpenIDConnectClaims $claims,
   ) {
     $this->state = $state;
     $this->configFactory = $config_factory;
@@ -160,6 +175,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $this->moduleHandler = $module_handler;
     $this->sessionManager = $session_manager;
     $this->openidConnectPluginManager = $openid_connect_plugin_manager;
+    $this->claims = $claims;
   }
 
   /**
@@ -243,6 +259,14 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // If the user is authenticated, no need to redirect to CILogon,
     // unless cookie doesn't exist, in which case, logout.
     if ($user_is_authenticated) {
+      // Clear the "just set" flag if the cookie now exists. Do this before the
+      // bypass early returns below, otherwise a first post-login request to an
+      // API route or by a bypassed role would leave the flag stuck forever,
+      // permanently disabling the safety logout.
+      if ($cookie_exists && $cookie_just_set) {
+        $session->remove('seamless_cilogon_cookie_was_set');
+      }
+
       // Skip SSO cookie enforcement for API routes or service accounts.
       // - API routes: machine-to-machine; the SSO cookie is a browser concept.
       // - Service accounts (e.g. mcp_bot): authenticate via /user/login, not
@@ -279,11 +303,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
         $event->setResponse($redir);
       }
 
-      // Clear the "just set" flag if cookie now exists.
-      if ($cookie_exists && $cookie_just_set) {
-        $session->remove('seamless_cilogon_cookie_was_set');
-      }
-
       return;
     }
 
@@ -307,15 +326,25 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $request = $event->getRequest();
 
     // Check if we need to set the cookie (flag set on request attributes
-    // in onRequest, which survives session regeneration during login)
-    if ($request->attributes->get('seamless_cilogon_set_cookie')) {
+    // in onRequest, which survives session regeneration during login).
+    // Only set the cookie if the user actually authenticated. If they cancel
+    // at the CILogon consent screen or the IdP errors out, the callback route
+    // still runs but the user remains anonymous; setting the cookie then would
+    // bounce them back to CILogon on every page view until the cookie expires.
+    if ($request->attributes->get('seamless_cilogon_set_cookie') && $this->currentUser->isAuthenticated()) {
       $request->attributes->remove('seamless_cilogon_set_cookie');
 
       $cookie_name = self::SEAMLESSCOOKIENAME;
       $site_name = $this->configFactory->get('system.site')->get('name');
       $cookie_value = $this->state->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
-      $cookie_expiration = $this->state->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
-      $cookie_expiration = strtotime($cookie_expiration);
+      $cookie_expiration_setting = $this->state->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
+      // strtotime() returns FALSE on an invalid value (e.g. a typo), which
+      // would cast to 0 and produce an immediately-expired cookie. Fall back
+      // to the default expiration in that case.
+      $cookie_expiration = strtotime($cookie_expiration_setting);
+      if ($cookie_expiration === FALSE) {
+        $cookie_expiration = strtotime('+18 hours');
+      }
       $cookie_domain = $this->getEffectiveCookieDomain();
 
       $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
@@ -334,54 +363,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
           . ' -- ' . basename(__FILE__) . ':' . __LINE__;
         $this->loggerFactory->get('drupal_seamless_cilogon')->notice($msg);
       }
-    }
-  }
-
-  /**
-   * Add the cookie, via a redirect.
-   *
-   * @param \Symfony\Component\HttpKernel\Event\RequestEvent $event
-   *   Response event.
-   * @param bool $seamless_debug
-   *   Whether debug mode is enabled.
-   * @param string $cookie_name
-   *   The cookie name to set.
-   */
-  protected function doSetCookie(RequestEvent $event, bool $seamless_debug, string $cookie_name): void {
-
-    $site_name = $this->configFactory->get('system.site')->get('name');
-    $cookie_value = $this->state->get('drupal_seamless_cilogon.seamless_cookie_value', $site_name);
-    $cookie_expiration = $this->state->get('drupal_seamless_cilogon.seamless_cookie_expiration', '+18 hours');
-    // Use value from form.
-    $cookie_expiration = strtotime($cookie_expiration);
-    $cookie_domain = $this->getEffectiveCookieDomain();
-    $cookie = new Cookie($cookie_name, $cookie_value, $cookie_expiration, '/', $cookie_domain);
-
-    $request = $event->getRequest();
-    $destination = $request->getRequestUri();
-
-    // @todo consider following
-    // "MUST use service to turn of Internal Page Cache,
-    // or else anonymous users will not ever be able to reach source page."
-    // $this->killSwitch->trigger();
-    // from https://www.drupal.org/project/adv_varnish/issues/3127566:
-    // Another documented way is to call the killSwitch in your code:
-    //
-    // commenting this out to see unnecessary
-    // \Drupal::service('page_cache_kill_switch')->trigger();
-    $redir = new TrustedRedirectResponse($destination, 302);
-    $redir->headers->setCookie($cookie);
-    $redir->headers->set('Cache-Control', 'public, max-age=0');
-    $redir->addCacheableDependency($destination);
-    $redir->addCacheableDependency($cookie);
-
-    $event->setResponse($redir);
-
-    if ($seamless_debug) {
-      $msg = __FUNCTION__ . "() - destination = $destination ---- set cookie:  name = $cookie_name, value = $cookie_value, expiration = $cookie_expiration "
-        . " = " . date("Y-m-d H:i:s", $cookie_expiration) . ", domain = $cookie_domain"
-        . ' -- ' . basename(__FILE__) . ':' . __LINE__;
-      $this->messenger->addStatus($msg);
     }
   }
 
@@ -442,8 +423,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
     // Setup redirect to CILogon flow.
-    $client_name = 'cilogon';
-
     // Check if the middleware redirected us here with a 'redirect' param
     // containing the original destination (e.g. /user?redirect=%2Fsome%2Fpage).
     // Note: Symfony already URL-decodes query param values, so no urldecode().
@@ -487,24 +466,43 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       $this->sessionManager->start();
     }
 
-    $config_name = 'openid_connect.settings.' . $client_name;
+    $config_name = 'openid_connect.settings.' . self::CLIENT_NAME;
     $configuration = $this->configFactory->get($config_name)->get('settings');
-    $client = $this->openidConnectPluginManager->createInstance($client_name, $configuration);
 
-    // Set destination in session for openid_connect.
-    // Must use array format: [$path, ['query' => $queryString]]
-    // to match OpenIDConnectSession::saveDestination().
-    $_SESSION['openid_connect_op'] = 'login';
-    $_SESSION['openid_connect_destination'] = [
-      $dest_path,
-      [
-        'query' => $dest_query,
-      ],
-    ];
+    try {
+      $client = $this->openidConnectPluginManager->createInstance(self::CLIENT_NAME, $configuration);
 
-    // Get scopes from client.
-    $scopes = implode(' ', $client->getClientScopes());
-    $response = $client->authorize($scopes);
+      // Set destination in session for openid_connect.
+      // Must use array format: [$path, ['query' => $queryString]]
+      // to match OpenIDConnectSession::saveDestination().
+      $_SESSION['openid_connect_op'] = 'login';
+      $_SESSION['openid_connect_destination'] = [
+        $dest_path,
+        [
+          'query' => $dest_query,
+        ],
+      ];
+
+      // Get scopes via the claims service rather than the client's
+      // getClientScopes() directly. getScopes() adds the scope for any
+      // configured userinfo_mapping the client doesn't already request (e.g. a
+      // future mapping under phone, address, or a custom scope); calling the
+      // client directly would silently drop those claims on the seamless path.
+      $scopes = $this->claims->getScopes($client);
+      $response = $client->authorize($scopes);
+    }
+    catch (\Throwable $e) {
+      // On a misconfigured site, $configuration is NULL and createInstance()
+      // throws a TypeError (OpenIDConnectClientBase::__construct requires an
+      // array). Without this guard the SSO cookie persists across requests, so
+      // every anonymous visit would trigger another 500. Log a warning and let
+      // the request continue normally instead.
+      $this->loggerFactory->get('drupal_seamless_cilogon')->warning(
+        'Seamless CILogon redirect aborted: @message',
+        ['@message' => $e->getMessage()]
+      );
+      return;
+    }
 
     $response->headers->set('Cache-Control', 'public, max-age=0');
     $event->setResponse($response);
@@ -568,8 +566,12 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    *   The cookie domain to use, or NULL to use the current host only.
    */
   protected function getEffectiveCookieDomain() {
-    $configured_domain = $this->state->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org');
-    $host = $this->requestStack->getCurrentRequest()->getHost();
+    // Normalize the configured value: trim stray whitespace and lowercase it.
+    // Hostnames are case-insensitive, so an admin entering ".ACCESS-CI.org" or
+    // a value with surrounding whitespace must still match. Without this the
+    // comparison below silently fails and cross-subdomain SSO breaks.
+    $configured_domain = strtolower(trim($this->state->get('drupal_seamless_cilogon.seamless_cookie_domain', '.access-ci.org')));
+    $host = strtolower($this->requestStack->getCurrentRequest()->getHost());
 
     // Normalize: ensure configured domain has leading dot for comparison.
     $match_domain = ltrim($configured_domain, '.');

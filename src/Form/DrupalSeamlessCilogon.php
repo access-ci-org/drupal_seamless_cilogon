@@ -177,7 +177,9 @@ class DrupalSeamlessCilogon extends FormBase {
   public function doSaveSeamlessSettings(array &$form, FormStateInterface $form_state): void {
     $this->state->set('drupal_seamless_cilogon.seamless_login_enabled', Xss::filter($form_state->getValue('seamless_login_enabled')));
     $this->state->set('drupal_seamless_cilogon.seamless_cookie_value', Xss::filter($form_state->getValue('seamless_cookie_value')));
-    $this->state->set('drupal_seamless_cilogon.seamless_cookie_domain', Xss::filter($form_state->getValue('seamless_cookie_domain')));
+    // Trim the cookie domain so stray whitespace doesn't break the
+    // host/domain comparison in getEffectiveCookieDomain().
+    $this->state->set('drupal_seamless_cilogon.seamless_cookie_domain', trim(Xss::filter($form_state->getValue('seamless_cookie_domain'))));
     $this->state->set('drupal_seamless_cilogon.seamless_cookie_expiration', Xss::filter($form_state->getValue('seamless_cookie_expiration')));
 
     $seamless_debug = Xss::filter($form_state->getValue('seamless_cookie_debug'));
