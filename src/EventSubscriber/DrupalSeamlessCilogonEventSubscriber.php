@@ -193,8 +193,20 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    * has already been through seamless login.
    */
   public function onRequest(RequestEvent $event): void {
-
     if (!$event->isMainRequest()) {
+      return;
+    }
+
+    // Skip static asset routes — they never need cookie/redirect logic.
+    $route_name = $this->routeMatch->getRouteName();
+    if (in_array($route_name, [
+      'system.css_asset',
+      'system.js_asset',
+      'system.files',
+      'image.style_public',
+      'image.style_private',
+      'image.style_temporary',
+    ])) {
       return;
     }
 
@@ -215,7 +227,6 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     }
 
     $user_is_authenticated = $this->currentUser->isAuthenticated();
-    $route_name = $this->routeMatch->getRouteName();
     $cookie_name = self::SEAMLESSCOOKIENAME;
     $current_request = $this->requestStack->getCurrentRequest();
     $cookie_exists = NULL !== $current_request->cookies->get($cookie_name);
