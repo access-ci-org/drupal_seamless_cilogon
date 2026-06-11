@@ -23,7 +23,6 @@ services:
       - '@module_handler'
       - '@session_manager'
       - '@plugin.manager.openid_connect_client'
-      - '@plugin.manager.cilogon_auth_client.processor'
-      - '@cilogon_auth.claims'
+      - '@openid_connect.claims'
     tags:
       - { name: 'event_subscriber' }
