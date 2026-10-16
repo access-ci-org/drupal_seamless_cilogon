@@ -24,5 +24,6 @@ services:
       - '@session_manager'
       - '@plugin.manager.openid_connect_client'
       - '@openid_connect.claims'
+      - '@page_cache_kill_switch'
     tags:
       - { name: 'event_subscriber' }

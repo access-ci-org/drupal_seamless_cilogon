@@ -7,6 +7,7 @@ use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Messenger\MessengerInterface;
+use Drupal\Core\PageCache\ResponsePolicy\KillSwitch;
 use Drupal\Core\Routing\TrustedRedirectResponse;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\Core\Session\SessionManagerInterface;
@@ -33,6 +34,23 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   // For pantheon, cookie name must follow pattern S+ESS[a-z0-9]+
   // (see https://docs.pantheon.io/cookies#cache-busting-cookies)
   const SEAMLESSCOOKIENAME = 'SESSaccesscisso';
+
+  /**
+   * Stops Drupal's page cache storing a response.
+   *
+   * @var \Drupal\Core\PageCache\ResponsePolicy\KillSwitch
+   */
+  protected $pageCacheKillSwitch;
+
+  /**
+   * Routes that mean the user is leaving, not arriving.
+   *
+   * Collected here because three separate branches below used to repeat these
+   * names as inline string comparisons, and a route missing from one of them
+   * is how an anonymous user clicking Log out ended up in an authorize flow
+   * (D8-2896).
+   */
+  const LOGOUT_ROUTES = ['user.logout', 'user.logout.confirm', 'user.logout.http'];
 
   // The OpenID Connect client plugin id used for the seamless flow. Shared
   // source of truth for the plugin instance and its config lookup.
@@ -149,6 +167,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
    *   The OpenID Connect client plugin manager.
    * @param \Drupal\openid_connect\OpenIDConnectClaims $claims
    *   The OpenID Connect claims service.
+   * @param \Drupal\Core\PageCache\ResponsePolicy\KillSwitch $page_cache_kill_switch
+   *   Stops Drupal's page cache storing the logout response.
    */
   public function __construct(
     StateInterface $state,
@@ -163,6 +183,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     SessionManagerInterface $session_manager,
     OpenIDConnectClientManager $openid_connect_plugin_manager,
     OpenIDConnectClaims $claims,
+    KillSwitch $page_cache_kill_switch,
   ) {
     $this->state = $state;
     $this->configFactory = $config_factory;
@@ -176,6 +197,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     $this->sessionManager = $session_manager;
     $this->openidConnectPluginManager = $openid_connect_plugin_manager;
     $this->claims = $claims;
+    $this->pageCacheKillSwitch = $page_cache_kill_switch;
   }
 
   /**
@@ -261,7 +283,10 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       return;
     }
 
-    // If logging out, delete the cookie and redirect to CILogon logout.
+    // If logging out, delete the cookie and redirect to CILogon logout. Only
+    // the browser route: user.logout.http is a JSON POST that answers 204, so
+    // redirecting it to CILogon would break that contract. It still counts as
+    // a logout for the exclusions above and below.
     if ($route_name === 'user.logout') {
       $this->doDeleteCookie($event, $seamless_debug, $cookie_name, $cookie_exists);
       return;
@@ -298,26 +323,22 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
       if (
         !$cookie_exists &&
         !$cookie_just_set &&
-        $route_name !== 'user.logout' &&
         $route_name !== 'user.login' &&
-        $route_name !== 'user.logout.confirm'
+        !in_array($route_name, self::LOGOUT_ROUTES, TRUE)
       ) {
-        // Programmatically log out the user instead of redirecting to
-        // logout URL.
-        user_logout();
-
-        // Redirect to CILogon logout.
-        $destination = 'https://cilogon.org/logout/?skin=access';
-        $redir = new TrustedRedirectResponse($destination, 302);
-        $redir->headers->set('Cache-Control', 'public, max-age=0');
-        $redir->addCacheableDependency($destination);
-        $event->setResponse($redir);
+        // This ends a session as surely as the logout route does, so it goes
+        // through the same path: it used to build its own redirect and expire
+        // no cookies at all, leaving the 18-hour identity cookie live on a
+        // response that had just logged the user out (D8-2896).
+        $this->doDeleteCookie($event, $seamless_debug, $cookie_name, $cookie_exists);
       }
 
       return;
     }
 
     // If here -- user is anonymous.  If cookie exists, redirect to cilogon.
+    // Note the logout branch above runs before the authenticated block, so it
+    // already catches anonymous logouts; this is only reached on other routes.
     if ($cookie_exists) {
       $this->doRedirectToCilogon($event, $seamless_debug);
     }
@@ -396,18 +417,53 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     $cookie_domain = $this->getEffectiveCookieDomain();
 
-    user_logout();
+    // Guarded: the anonymous branch reaches this method too, and user_logout()
+    // on an anonymous session logs a misleading "Session closed for" entry.
+    if ($this->currentUser->isAuthenticated()) {
+      user_logout();
+    }
 
     $destination = 'https://cilogon.org/logout/?skin=access';
 
+    // This response carries Set-Cookie deletions and must reach the browser
+    // that asked for it, never a shared cache. Two separate controls, because
+    // they govern different layers (D8-2896):
+    //
+    // The kill switch is what stops Drupal's own page cache storing it.
+    // PageCache::storeResponse() decides on CacheableResponseInterface and the
+    // response-policy chain and never reads Cache-Control, so the header below
+    // does nothing there; TrustedRedirectResponse is cacheable, so without
+    // this the response is a storage candidate.
+    $this->pageCacheKillSwitch->trigger();
+
     $redir = new TrustedRedirectResponse($destination, 302);
-    $redir->headers->set('Cache-Control', 'public, max-age=0');
+    // The header covers everything downstream -- Varnish, the CDN, the
+    // browser -- and is the only control on the authenticated path. It
+    // replaces 'public, max-age=0', which invited a shared cache to hold a
+    // response whose whole purpose is per-user Set-Cookie deletions.
+    $redir->headers->set('Cache-Control', 'private, no-store, max-age=0');
     $redir->addCacheableDependency($destination);
 
     // Always send an expired cookie to ensure deletion, even if we didn't
     // detect it in the request (e.g. timing or domain mismatch edge cases).
     $expireCookie = new Cookie($cookie_name, '', 1, '/', $cookie_domain);
     $redir->headers->setCookie($expireCookie);
+
+    // The identity cookie goes with it. It is minted by the access module and
+    // carries an 18-hour rolling TTL, so a logout that leaves it behind leaves
+    // the user authenticated on every site that trusts it. Its domain is
+    // resolved by that module's own rules, which differ from this one's: it
+    // honours ACCESS_JWT_COOKIE_DOMAIN and has no host-aware fallback. A
+    // deletion only matches on name, domain and path, so resolving it here
+    // the way this module resolves its own would silently fail to clear.
+    // Tell the access module to clear its identity cookie on this response.
+    // It already force-clears on the logout routes it knows (its own
+    // LOGOUT_ROUTES), but the safety logout below fires on an arbitrary route,
+    // which no route list can enumerate. An attribute keeps the cookie's name,
+    // domain rules and attributes in the module that owns them -- duplicating
+    // them here would diverge silently the first time that module changed
+    // them. Same mechanism this file already uses for the login callback.
+    $event->getRequest()->attributes->set('access_force_logout', TRUE);
 
     $event->setResponse($redir);
 
