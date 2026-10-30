@@ -80,13 +80,17 @@ class LogoutCookieTest extends KernelTestBase {
    *   Whether the current user is authenticated.
    * @param array<string, string> $cookies
    *   Cookies the browser sends.
+   * @param string $path
+   *   The request path.
+   * @param string $class
+   *   The subscriber class, so a test can observe a protected step.
    */
-  protected function dispatch(string $route, bool $authenticated, array $cookies): ?Response {
+  protected function dispatch(string $route, bool $authenticated, array $cookies, string $path = '/user/logout', string $class = DrupalSeamlessCilogonEventSubscriber::class): ?Response {
     $this->container->get('current_user')->setAccount($authenticated
       ? new UserSession(['uid' => 2, 'name' => 'someone', 'roles' => ['authenticated']])
       : new AnonymousUserSession());
 
-    $request = Request::create('https://support.access-ci.org/user/logout');
+    $request = Request::create('https://support.access-ci.org' . $path);
     foreach ($cookies as $name => $value) {
       $request->cookies->set($name, $value);
     }
@@ -101,7 +105,7 @@ class LogoutCookieTest extends KernelTestBase {
     $route_match = $this->createMock(RouteMatchInterface::class);
     $route_match->method('getRouteName')->willReturn($route);
 
-    $subscriber = new DrupalSeamlessCilogonEventSubscriber(
+    $subscriber = new $class(
       $this->container->get('state'),
       $this->container->get('config.factory'),
       $this->container->get('current_user'),
@@ -241,6 +245,45 @@ class LogoutCookieTest extends KernelTestBase {
     ]);
 
     $this->assertNull($response, 'A normal page gets no interception.');
+  }
+
+  /**
+   * The access token endpoints answer anonymous callers themselves.
+   *
+   * They are fetched by script, which cannot follow a redirect to CILogon, so
+   * an anonymous request carrying the SSO cookie must reach the endpoint and
+   * get its JSON login_required rather than a 302. Every other path still
+   * redirects.
+   *
+   * @dataProvider tokenPathCases
+   */
+  public function testTokenEndpointsAreNotRedirected(string $path, bool $redirected): void {
+    $response = $this->dispatch('some.route', FALSE, [self::SSO_COOKIE => '1'], $path, RedirectMarkingSubscriber::class);
+    $this->assertSame($redirected, $response !== NULL && $response->headers->get('X-Test-Redirect') === 'cilogon');
+  }
+
+  public static function tokenPathCases(): array {
+    return [
+      'agent token' => ['/api/agent-token', FALSE],
+      'token exchange' => ['/api/token-exchange', FALSE],
+      'a prefix of the path is not exempt' => ['/api/agent-token/x', TRUE],
+      'other api paths still redirect' => ['/api/2.2/events', TRUE],
+      'pages still redirect' => ['/node/1', TRUE],
+    ];
+  }
+
+}
+
+/**
+ * Records the CILogon redirect instead of running the OpenID flow.
+ */
+class RedirectMarkingSubscriber extends DrupalSeamlessCilogonEventSubscriber {
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function doRedirectToCilogon(RequestEvent $event, bool $seamless_debug): void {
+    $event->setResponse(new Response('', 302, ['X-Test-Redirect' => 'cilogon']));
   }
 
 }

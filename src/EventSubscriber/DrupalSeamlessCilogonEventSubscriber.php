@@ -57,6 +57,16 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
   const CLIENT_NAME = 'cilogon';
 
   /**
+   * Paths whose anonymous requests are never redirected to CILogon.
+   *
+   * The access module's token endpoints are fetched by script, which cannot
+   * follow a redirect to CILogon; an anonymous caller gets the endpoint's own
+   * JSON error instead. The agent-token endpoint applies the SSO-cookie rule
+   * itself. Exact paths only, not /api/*.
+   */
+  const NO_REDIRECT_PATHS = ['/api/agent-token', '/api/token-exchange'];
+
+  /**
    * The state service.
    *
    * @var \Drupal\Core\State\StateInterface
@@ -339,7 +349,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     // If here -- user is anonymous.  If cookie exists, redirect to cilogon.
     // Note the logout branch above runs before the authenticated block, so it
     // already catches anonymous logouts; this is only reached on other routes.
-    if ($cookie_exists) {
+    if ($cookie_exists && !in_array($request->getPathInfo(), self::NO_REDIRECT_PATHS, TRUE)) {
       $this->doRedirectToCilogon($event, $seamless_debug);
     }
   }
