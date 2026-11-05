@@ -226,9 +226,23 @@ class CookieMiddleware implements HttpKernelInterface {
       return TRUE;
     }
 
-    /** @var \Drupal\domain\DomainStorageInterface $domain_storage */
-    $domain_storage = $this->entityTypeManager->getStorage('domain');
-    $current_domain_name = (string) $domain_storage->loadDefaultId();
+    // This middleware runs before kernel_pre_handle loads the modules' .module
+    // files. When the entity type definitions are not cached, getStorage()
+    // rebuilds them and invokes procedural hooks that are not loaded yet,
+    // which throws on Drupal 11. The definitions only get cached by a process
+    // that has every module loaded, so letting it throw would fail every
+    // request until drush rebuilds them. Skip the seamless redirect for this
+    // request instead; the rest of the request rebuilds the definitions
+    // normally.
+    try {
+      /** @var \Drupal\domain\DomainStorageInterface $domain_storage */
+      $domain_storage = $this->entityTypeManager->getStorage('domain');
+      $current_domain_name = (string) $domain_storage->loadDefaultId();
+    }
+    catch (\Throwable $e) {
+      $this->logger->warning('Skipped the seamless login check because the domain lookup failed: @message', ['@message' => $e->getMessage()]);
+      return FALSE;
+    }
 
     // @phpstan-ignore-next-line
     $domain_verified = $current_domain_name === 'amp_cyberinfrastructure_org';
