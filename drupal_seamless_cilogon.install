@@ -8,13 +8,13 @@
 /**
  * Set state.
  */
-function drupal_seamless_cilogon_install(): void {
+function drupal_seamless_cilogon_update_9000(): void {
   \Drupal::state()->set('drupal_seamless_cilogon.logging', 0);
 }
 
 /**
- * Set state.
+ * Delete the middleware logging setting; the middleware was removed.
  */
-function drupal_seamless_cilogon_update_9000(): void {
-  \Drupal::state()->set('drupal_seamless_cilogon.logging', 0);
+function drupal_seamless_cilogon_update_9001(): void {
+  \Drupal::state()->delete('drupal_seamless_cilogon.logging');
 }

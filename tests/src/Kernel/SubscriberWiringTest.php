@@ -2,7 +2,11 @@
 
 namespace Drupal\Tests\drupal_seamless_cilogon\Kernel;
 
+use Drupal\Core\PageCache\ChainRequestPolicy;
+use Drupal\Core\PageCache\RequestPolicyInterface;
 use Drupal\KernelTests\KernelTestBase;
+use Drupal\drupal_seamless_cilogon\PageCache\DenySeamlessCookie;
+use Symfony\Component\HttpFoundation\Request;
 
 /**
  * The subscriber's container wiring (D8-2896).
@@ -69,6 +73,46 @@ class SubscriberWiringTest extends KernelTestBase {
 
     $this->assertArrayHasKey('kernel.request', $events, 'Listens on REQUEST.');
     $this->assertArrayHasKey('kernel.response', $events, 'Listens on RESPONSE.');
+  }
+
+  /**
+   * The CookieMiddleware service is gone and the cookie policy is wired in.
+   *
+   * The chain's CommandLineOrUnsafeMethod rule denies every CLI request, so
+   * the chain's result alone cannot show this policy's effect. The test checks
+   * that the policy is collected into the chain, then calls the policy
+   * directly on a GET request with and without the cookie.
+   */
+  public function testSeamlessCookieIsDeniedByPageCachePolicy(): void {
+    $this->assertFalse(
+      $this->container->has('http_middleware.CookieMiddleware'),
+      'The http_middleware.CookieMiddleware service is removed.',
+    );
+
+    $chain = $this->container->get('page_cache_request_policy');
+    $rules = (new \ReflectionProperty(ChainRequestPolicy::class, 'rules'))->getValue($chain);
+    $this->assertNotEmpty(
+      array_filter($rules, static fn($rule) => $rule instanceof DenySeamlessCookie),
+      'The seamless cookie policy is collected into page_cache_request_policy.',
+    );
+
+    $with_cookie = Request::create('/', 'GET', [], ['SESSaccesscisso' => 'x']);
+    $this->assertSame(
+      RequestPolicyInterface::DENY,
+      $chain->check($with_cookie),
+      'The chain denies a request carrying the seamless cookie.',
+    );
+
+    $policy = $this->container->get('drupal_seamless_cilogon.page_cache_request_policy.deny_seamless_cookie');
+    $this->assertSame(
+      RequestPolicyInterface::DENY,
+      $policy->check($with_cookie),
+      'The policy denies a GET request carrying the seamless cookie.',
+    );
+    $this->assertNull(
+      $policy->check(Request::create('/', 'GET')),
+      'The policy leaves a GET request without the cookie undecided.',
+    );
   }
 
 }
