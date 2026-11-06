@@ -1,0 +1,7 @@
+seamless_cache_test.page:
+  path: '/seamless-cache-test'
+  defaults:
+    _controller: '\Drupal\seamless_cache_test\Controller\PageController::build'
+  requirements:
+    # Open on purpose: the test needs an anonymous, page-cacheable route.
+    _access: 'TRUE'

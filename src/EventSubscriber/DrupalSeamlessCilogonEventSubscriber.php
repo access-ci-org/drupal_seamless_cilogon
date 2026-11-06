@@ -500,8 +500,8 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
 
     // \Drupal::service('page_cache_kill_switch')->trigger();
     // Setup redirect to CILogon flow.
-    // Check if the middleware redirected us here with a 'redirect' param
-    // containing the original destination (e.g. /user?redirect=%2Fsome%2Fpage).
+    // Check for a 'redirect' query param holding the original destination, as
+    // in links to /user/login?redirect=%2Fsome%2Fpage.
     // Note: Symfony already URL-decodes query param values, so no urldecode().
     $redirect_param = $request->query->get('redirect');
     if ($redirect_param) {
@@ -522,7 +522,7 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
     }
 
     // Resolve the path and query for the post-login destination.
-    // When we have a destination from the middleware's redirect param, use it
+    // When we have a destination from the 'redirect' query param, use it
     // (including its query, which may be NULL). Otherwise fall back to the
     // current request's path and query.
     if ($destination_path !== NULL) {

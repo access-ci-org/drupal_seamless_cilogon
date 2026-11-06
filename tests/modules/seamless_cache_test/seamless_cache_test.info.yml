@@ -1,0 +1,5 @@
+name: 'Seamless cache test'
+type: module
+description: 'Provides an anonymous, page-cacheable route for the seamless cookie page cache test.'
+package: Testing
+core_version_requirement: ^10 || ^11

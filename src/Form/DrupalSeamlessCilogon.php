@@ -79,8 +79,6 @@ class DrupalSeamlessCilogon extends FormBase {
   public function buildForm(array $form, FormStateInterface $form_state): array {
     $seamless_debug = $this->state->get('drupal_seamless_cilogon.seamless_cookie_debug', FALSE);
 
-    $seamless_middleware_logging = $this->state->get('drupal_seamless_cilogon.logging');
-
     $seamless_login_enabled = $this->state->get('drupal_seamless_cilogon.seamless_login_enabled', TRUE);
 
     $site_name = $this->configFactory->get('system.site')->get('name');
@@ -125,13 +123,6 @@ class DrupalSeamlessCilogon extends FormBase {
       '#title' => $this->t('Enable debug logging?'),
       '#description' => $this->t('Logging will go to screen when possible, and to drupal log with label "seamless_cilogon"'),
       '#default_value' => $seamless_debug,
-    ];
-
-    $form['seamless_middleware_logging'] = [
-      '#type' => 'checkbox',
-      '#title' => $this->t('Enable MiddleWare logging?'),
-      '#description' => $this->t('Enable logging to the Drupal Log.'),
-      '#default_value' => $seamless_middleware_logging,
     ];
 
     $form['save_seamless_settings'] = [
@@ -184,7 +175,6 @@ class DrupalSeamlessCilogon extends FormBase {
 
     $seamless_debug = Xss::filter($form_state->getValue('seamless_cookie_debug'));
     $this->state->set('drupal_seamless_cilogon.seamless_cookie_debug', $seamless_debug);
-    $this->state->set('drupal_seamless_cilogon.logging', Xss::filter($form_state->getValue('seamless_middleware_logging')));
 
     if ($seamless_debug) {
 

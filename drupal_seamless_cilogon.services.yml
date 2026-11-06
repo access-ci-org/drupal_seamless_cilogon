@@ -1,13 +1,8 @@
 services:
-  http_middleware.CookieMiddleware:
-    class: '\Drupal\drupal_seamless_cilogon\StackMiddleware\CookieMiddleware'
-    arguments:
-      - '@logger.factory'
-      - '@state'
-      - '@module_handler'
-      - '@entity_type.manager'
+  drupal_seamless_cilogon.page_cache_request_policy.deny_seamless_cookie:
+    class: Drupal\drupal_seamless_cilogon\PageCache\DenySeamlessCookie
     tags:
-      - { name: http_middleware, priority: 250, responder: true }
+      - { name: page_cache_request_policy }
 
   drupal_seamless_cilogon_event_subscriber:
     class: '\Drupal\drupal_seamless_cilogon\EventSubscriber\DrupalSeamlessCilogonEventSubscriber'
