@@ -313,15 +313,16 @@ class DrupalSeamlessCilogonEventSubscriber implements EventSubscriberInterface {
         $session->remove('seamless_cilogon_cookie_was_set');
       }
 
-      // Skip SSO cookie enforcement for API routes or service accounts.
+      // Skip SSO cookie enforcement for API routes or bypassed roles.
       // - API routes: machine-to-machine; the SSO cookie is a browser concept.
-      // - Service accounts (e.g. mcp_bot): authenticate via /user/login, not
-      //   CILogon, so they will never have the SSO cookie.
+      //   Service accounts (e.g. mcp_service) authenticate via /user/login,
+      //   not CILogon, and only call API routes, so this check covers them.
+      // - Administrators: may log in locally without CILogon.
       $path = $request->getPathInfo();
       if (str_starts_with($path, '/api/') || str_starts_with($path, '/jsonapi/')) {
         return;
       }
-      $bypass_roles = ['mcp_bot', 'administrator'];
+      $bypass_roles = ['administrator'];
       $user_roles = $this->currentUser->getRoles();
       if (array_intersect($bypass_roles, $user_roles)) {
         return;
